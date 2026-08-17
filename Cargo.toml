@@ -20,6 +20,34 @@ license = "MIT OR Apache-2.0"
 [workspace.lints.rust]
 unsafe_code = "forbid"
 
+# A node may be a Raspberry Pi with a slow card and a power budget, so the
+# release build optimises for a small, quick binary rather than for build time.
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+
+# Debug builds are what the test suite and `cargo run` use, and they dominate
+# `target/`. Dropping full debuginfo cuts that directory by more than half
+# while still leaving line numbers in backtraces.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.test]
+debug = "line-tables-only"
+
+# Dependencies are rebuilt rarely and stepped through even more rarely.
+[profile.dev.package."*"]
+debug = false
+opt-level = 1
+
+# Benchmarks measure the code as it ships.
+[profile.bench]
+inherits = "release"
+debug = false
+
 [workspace.dependencies]
 aether-core = { path = "crates/aether-core" }
 aether-protocol = { path = "crates/aether-protocol" }
