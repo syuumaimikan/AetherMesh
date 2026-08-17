@@ -1,0 +1,22 @@
+# AetherMesh controller configuration.
+# Every key is optional; anything omitted keeps its default.
+# CLI flags override this file.
+
+# Address to listen on.
+listen = "0.0.0.0:7000"
+
+# Seconds without a heartbeat before a node is evicted.
+heartbeat_timeout_secs = 30
+
+# Shared secret every agent must present. Remove to accept any agent.
+# Only meaningful together with TLS: without it the token is sent in the clear.
+auth_token = "change-me"
+
+# TLS. Both keys are required together; remove both to serve plaintext.
+# Generate a self-signed pair with:
+#   aether-controller generate-cert --host mesh.example.com
+tls_cert_path = "cert.pem"
+tls_key_path = "key.pem"
+
+# Seconds between metrics log lines. 0 turns them off.
+metrics_interval_secs = 60

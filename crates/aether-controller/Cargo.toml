@@ -1,0 +1,40 @@
+[package]
+name = "aether-controller"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+# TLS for agent connections, plus self-signed certificate generation.
+tls = ["dep:tokio-rustls", "dep:rustls-pemfile", "dep:rcgen"]
+
+[dependencies]
+aether-core.workspace = true
+aether-protocol.workspace = true
+aether-scheduler.workspace = true
+anyhow.workspace = true
+clap = { workspace = true, features = ["derive", "env"] }
+rcgen = { version = "0.14", default-features = false, features = [
+    "ring",
+    "pem",
+], optional = true }
+rustls-pemfile = { workspace = true, optional = true }
+serde = { workspace = true, features = ["derive"] }
+thiserror.workspace = true
+tokio = { workspace = true, features = [
+    "io-util",
+    "macros",
+    "net",
+    "rt-multi-thread",
+    "sync",
+    "time",
+] }
+tokio-rustls = { workspace = true, optional = true }
+toml.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true

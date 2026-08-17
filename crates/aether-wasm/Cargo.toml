@@ -1,0 +1,29 @@
+[package]
+name = "aether-wasm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+# Pure-Rust interpreter: builds anywhere, including Raspberry Pi, with no C
+# toolchain. This is the default for a reason.
+default = ["wasmi-backend"]
+wasmi-backend = ["dep:wasmi"]
+# Cranelift JIT: faster on CPU-bound modules, heavier to build.
+wasmtime-backend = ["dep:wasmtime"]
+
+[dependencies]
+thiserror.workspace = true
+wasmi = { version = "0.46", optional = true }
+wasmtime = { version = "34", optional = true, default-features = false, features = [
+    "cranelift",
+    "runtime",
+    "std",
+] }
+
+[dev-dependencies]
+wat = "1"
+
+[lints]
+workspace = true

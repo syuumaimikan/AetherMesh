@@ -1,0 +1,19 @@
+[package]
+name = "aether-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+blake3.workspace = true
+lz4_flex = { version = "0.14", default-features = false, features = ["std"] }
+serde = { workspace = true, features = ["derive"] }
+thiserror.workspace = true
+uuid = { workspace = true, features = ["v4", "serde"] }
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

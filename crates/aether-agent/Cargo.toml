@@ -1,0 +1,41 @@
+[package]
+name = "aether-agent"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+# TLS for the control connection.
+tls = ["dep:tokio-rustls", "dep:rustls-pemfile"]
+
+[dependencies]
+aether-core.workspace = true
+aether-protocol.workspace = true
+anyhow.workspace = true
+blake3.workspace = true
+clap = { workspace = true, features = ["derive", "env"] }
+rustls-pemfile = { workspace = true, optional = true }
+serde = { workspace = true, features = ["derive"] }
+sysinfo = { version = "0.36.1", default-features = false, features = ["system"] }
+thiserror.workspace = true
+tokio = { workspace = true, features = [
+    "io-util",
+    "macros",
+    "net",
+    "rt-multi-thread",
+    "sync",
+    "time",
+] }
+tokio-rustls = { workspace = true, optional = true }
+toml.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+aether-controller.workspace = true
+aether-scheduler.workspace = true
+
+[lints]
+workspace = true

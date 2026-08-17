@@ -1,0 +1,51 @@
+phase=20
+
+completed:
+- workspace
+- core-types
+- protocol
+- node-registry
+- agent-metrics
+- scheduler-mvp
+- task-dispatch-simulation
+- real-network (TCP + length-prefixed frames, register/heartbeat)
+- remote-task-execution (builtin tasks: echo / hash(blake3) / cpu)
+- benchmark-mvp (in-process mesh, text/json report)
+- data-locality (DataId/DataDescriptor, DataCatalog, LocalityScheduler)
+- content-addressable-transfer (BLAKE3 DataId, DataStore, dedup transfer)
+- chunk-transfer (ChunkManifest/ChunkAssembler, per-chunk dedup)
+- adaptive-compression (lz4, rule-based policy)
+- advanced-scheduler (weighted score)
+- benchmark-comparison (baseline vs aethermesh, P50/P95/P99)
+- failure-recovery (RetryPolicy, health monitor / heartbeat timeout)
+- multi-node-test (3 agents over real TCP + docs/multi-node.md)
+- cloud-adapter (aether-cloud: CloudProvider trait + StaticProvider)
+- production-architecture (auth token, TLS, node identity, config, metrics)
+
+next=(all 20 phases done; open work is listed below)
+
+notes:
+- transport = TCP + u32 BE length prefix; TLS via the `tls` feature
+  (tokio-rustls/ring, self-signed generation with `generate-cert`)
+  QUIC would be a transport swap; the framing layer is independent
+- serve(listener, state, security) / serve_tls(..., acceptor)
+  handle_connection is generic over AsyncRead+AsyncWrite
+- auth = shared bearer token in RegisterNode, constant-time compare,
+  RegisterRejected on failure
+- agent identity persists in <data dir>/aethermesh/node-id
+- config: TOML (ControllerConfig / AgentConfig), CLI flags override,
+  deny_unknown_fields; examples in examples/*.toml
+- observability: MeshMetrics counters in MeshState + Prometheus text form,
+  periodic metrics log line in the controller binary
+- Controller::new(scheduler, transport, catalog)
+    .with_chunk_size(n).with_compression(p).with_data_reuse(b).with_retry(r)
+  retry: unreachable/timeout only; a task that ran and failed is not retried
+- benchmark: `run --mode baseline|aethermesh` and `compare`
+  in-process measurement (real codec + real executor, no sockets)
+
+open work (not started):
+- no task submission CLI (library API only)
+- parallel chunk transfer (design supports it; transports send sequentially)
+- bandwidth/latency are caller-supplied; nothing measures them yet
+- cloud SDK adapters (AWS/GCP/Azure/K8s) behind CloudProvider
+- client certificates / per-node credentials (single shared token today)

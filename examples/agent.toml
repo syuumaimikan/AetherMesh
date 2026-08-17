@@ -1,0 +1,32 @@
+# AetherMesh agent configuration.
+# Every key is optional; anything omitted keeps its default.
+# CLI flags override this file.
+
+# Controller to register with.
+controller = "mesh.example.com:7000"
+
+# Address other nodes can reach this agent on.
+advertise = "192.168.1.42:7001"
+
+# Seconds between heartbeats.
+heartbeat_secs = 5
+
+# Shared secret, when the controller requires one.
+# Prefer the AETHERMESH_TOKEN environment variable on shared machines.
+auth_token = "change-me"
+
+# Where this node's persistent id is stored. Keeping it means a restarted
+# agent rejoins as the same node instead of appearing as a new one.
+# Defaults to <data dir>/aethermesh/node-id.
+# identity_path = "/var/lib/aethermesh/node-id"
+
+# Certificate to verify the controller against (its own cert, if self-signed).
+# Setting this switches the connection to TLS.
+tls_ca_path = "cert.pem"
+
+# Name the certificate was issued for. Defaults to the controller's host part.
+# tls_server_name = "mesh.example.com"
+
+# Link speed toward this node, in bytes per second. Feeds the scheduler's
+# transfer cost and the compression policy. Leave unset if you do not know it.
+bandwidth_bytes_per_sec = 12500000
