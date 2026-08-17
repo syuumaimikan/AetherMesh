@@ -184,11 +184,19 @@ async fn main() -> anyhow::Result<()> {
 
     // The client API is what non-Rust callers use: publish data, submit tasks.
     if let Some(client_addr) = config.client_listen {
-        let controller = Controller::new(
+        let mut controller = Controller::new(
             AdvancedScheduler::new(state.catalog.clone()),
             NetworkTransport::new(state.connections.clone()),
             state.catalog.clone(),
         );
+        if let Some(cache) = config.result_cache() {
+            info!(
+                entries = config.result_cache_entries,
+                ttl_secs = config.result_cache_ttl_secs,
+                "result cache enabled"
+            );
+            controller = controller.with_result_cache(cache);
+        }
         let (gateway, commands) = ClientGateway::new(64);
         tokio::spawn(run_dispatcher(controller, state.clone(), commands));
 

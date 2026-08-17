@@ -41,6 +41,12 @@ pub struct ControllerConfig {
     pub probe_interval_secs: u64,
     /// Ballast in the bandwidth probe.
     pub probe_bytes: usize,
+    /// How many finished results to remember, so repeated work is answered
+    /// without dispatching it. Zero turns caching off, which is the default:
+    /// it is only correct when tasks are deterministic.
+    pub result_cache_entries: usize,
+    /// Seconds before a cached result is forgotten. Zero means never.
+    pub result_cache_ttl_secs: u64,
 }
 
 impl Default for ControllerConfig {
@@ -61,6 +67,8 @@ impl Default for ControllerConfig {
             metrics_interval_secs: 60,
             probe_interval_secs: 60,
             probe_bytes: crate::probe::DEFAULT_PROBE_BYTES,
+            result_cache_entries: 0,
+            result_cache_ttl_secs: 0,
         }
     }
 }
@@ -140,6 +148,19 @@ impl ControllerConfig {
     /// CA for client certificates, when mutual TLS is configured.
     pub fn client_ca_path(&self) -> Option<PathBuf> {
         self.tls_client_ca_path.clone()
+    }
+
+    /// The result cache this configuration asks for, if any.
+    pub fn result_cache(&self) -> Option<crate::cache::ResultCache> {
+        if self.result_cache_entries == 0 {
+            return None;
+        }
+
+        let cache = crate::cache::ResultCache::new(self.result_cache_entries);
+        Some(match self.result_cache_ttl_secs {
+            0 => cache,
+            seconds => cache.with_ttl(Duration::from_secs(seconds)),
+        })
     }
 }
 

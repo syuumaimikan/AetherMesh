@@ -146,6 +146,8 @@ pub struct Controller<S, T> {
     reuse_data: bool,
     retry: RetryPolicy,
     retries: u64,
+    /// Results of finished work, when the operator turned caching on.
+    cache: Option<crate::cache::ResultCache>,
     data_bytes_sent: u64,
     data_bytes_uncompressed: u64,
     transfers_skipped: u64,
@@ -169,6 +171,7 @@ impl<S: Scheduler, T: TaskTransport + Send> Controller<S, T> {
             reuse_data: true,
             retry: RetryPolicy::default(),
             retries: 0,
+            cache: None,
             data_bytes_sent: 0,
             data_bytes_uncompressed: 0,
             transfers_skipped: 0,
@@ -193,6 +196,21 @@ impl<S: Scheduler, T: TaskTransport + Send> Controller<S, T> {
     pub fn with_retry(mut self, retry: RetryPolicy) -> Self {
         self.retry = retry;
         self
+    }
+
+    /// Answers repeated work from a cache instead of dispatching it.
+    ///
+    /// Only correct for deterministic tasks. A module granted the clock or
+    /// randomness is not one, which is why this is a decision the operator
+    /// makes rather than a default.
+    pub fn with_result_cache(mut self, cache: crate::cache::ResultCache) -> Self {
+        self.cache = Some(cache);
+        self
+    }
+
+    /// The result cache, if one is attached.
+    pub fn cache(&self) -> Option<&crate::cache::ResultCache> {
+        self.cache.as_ref()
     }
 
     /// Tasks re-dispatched after a delivery failure.
@@ -286,6 +304,15 @@ impl<S: Scheduler, T: TaskTransport + Send> Controller<S, T> {
     /// next best node, up to [`RetryPolicy::max_attempts`]. A task that *ran*
     /// and failed is returned as-is: rerunning it would just fail again.
     pub async fn submit(&mut self, task: Task) -> Result<TaskResult, DispatchError> {
+        // Identical work has an identical answer, so the cheapest dispatch is
+        // the one that does not happen.
+        if let Some(cache) = &self.cache
+            && let Some(result) = cache.get(&task)
+        {
+            debug!(task_id = %task.id, "answered from the result cache");
+            return Ok(result);
+        }
+
         let mut unusable: HashSet<NodeId> = HashSet::new();
 
         for attempt in 1..=self.retry.max_attempts {
@@ -302,7 +329,12 @@ impl<S: Scheduler, T: TaskTransport + Send> Controller<S, T> {
                 .ok_or(DispatchError::NoNodeAvailable(task.id))?;
 
             match self.try_once(node_id, &task).await {
-                Ok(result) => return Ok(result),
+                Ok(result) => {
+                    if let Some(cache) = &self.cache {
+                        cache.put(&task, &result);
+                    }
+                    return Ok(result);
+                }
                 Err(error) if attempt < self.retry.max_attempts && is_retryable(&error) => {
                     warn!(%node_id, task_id = %task.id, attempt, %error, "retrying on another node");
                     // The data this node was credited with is no longer usable.
@@ -804,6 +836,71 @@ mod tests {
 
         assert!(matches!(error, DispatchError::Unreachable { .. }));
         assert_eq!(controller.retries(), 0);
+    }
+
+    #[tokio::test]
+    async fn repeated_work_is_answered_from_the_cache() {
+        let mut controller = controller().with_result_cache(crate::cache::ResultCache::new(16));
+        controller.registry_mut().register(node("only", 0.2));
+
+        let first = controller
+            .submit(Task::new(kind::ECHO, b"same".to_vec()))
+            .await
+            .unwrap();
+        let bytes_after_first = controller.transport().bytes_transferred();
+
+        // A different task doing identical work.
+        let second = controller
+            .submit(Task::new(kind::ECHO, b"same".to_vec()))
+            .await
+            .unwrap();
+
+        assert_eq!(first.output(), second.output());
+        assert_eq!(
+            controller.transport().bytes_transferred(),
+            bytes_after_first,
+            "the second submission should not have reached a node"
+        );
+        assert_eq!(controller.cache().unwrap().stats(), (1, 1));
+    }
+
+    #[tokio::test]
+    async fn different_work_still_reaches_a_node() {
+        let mut controller = controller().with_result_cache(crate::cache::ResultCache::new(16));
+        controller.registry_mut().register(node("only", 0.2));
+
+        controller
+            .submit(Task::new(kind::ECHO, b"one".to_vec()))
+            .await
+            .unwrap();
+        let bytes_after_first = controller.transport().bytes_transferred();
+
+        let second = controller
+            .submit(Task::new(kind::ECHO, b"two".to_vec()))
+            .await
+            .unwrap();
+
+        assert_eq!(second.output(), Some(&b"two"[..]));
+        assert!(controller.transport().bytes_transferred() > bytes_after_first);
+    }
+
+    #[tokio::test]
+    async fn caching_is_off_unless_asked_for() {
+        let mut controller = controller();
+        controller.registry_mut().register(node("only", 0.2));
+
+        controller
+            .submit(Task::new(kind::ECHO, b"same".to_vec()))
+            .await
+            .unwrap();
+        let bytes_after_first = controller.transport().bytes_transferred();
+        controller
+            .submit(Task::new(kind::ECHO, b"same".to_vec()))
+            .await
+            .unwrap();
+
+        assert!(controller.transport().bytes_transferred() > bytes_after_first);
+        assert!(controller.cache().is_none());
     }
 
     #[tokio::test]

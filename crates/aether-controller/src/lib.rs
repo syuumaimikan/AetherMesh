@@ -1,5 +1,6 @@
 //! Control plane: node registry, task queue, dispatch, health monitoring.
 
+pub mod cache;
 pub mod client;
 pub mod config;
 pub mod connections;
@@ -17,6 +18,7 @@ pub mod state;
 #[cfg(feature = "tls")]
 pub mod tls;
 
+pub use cache::{ResultCache, WorkKey};
 pub use client::{
     CLIENT_PROTOCOL_VERSION, ClientGateway, ClientRequest, ClientResponse, bind_clients,
     run_dispatcher, serve_clients,
