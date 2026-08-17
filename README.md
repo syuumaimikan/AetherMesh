@@ -1,3 +1,5 @@
+<img src="assets/logo.svg" width="88" align="right" alt="">
+
 # AetherMesh
 
 **Stop shipping gigabytes to your compute. Ship the compute instead.**
@@ -11,7 +13,7 @@ Write the work in TypeScript, Rust, Go, or anything that compiles to WebAssembly
 [![Tests](https://img.shields.io/badge/tests-256%20passing-brightgreen.svg)](#contributing)
 [![Status](https://img.shields.io/badge/status-alpha-yellow.svg)](#project-status)
 
-**日本語のドキュメントは [README.ja.md](README.ja.md) にあります。**
+**[Documentation site](https://syuumaimikan.github.io/AetherMesh/)** · **[日本語](README.ja.md)** · **[Examples](examples)**
 
 ---
 
