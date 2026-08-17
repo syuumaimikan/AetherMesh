@@ -1,17 +1,41 @@
-[package]
+﻿[package]
 name = "aether-cloud"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[features]
+default = []
+# Adapters that talk to a provider's REST API: Kubernetes, AWS, GCP, Azure.
+# Off by default so a Raspberry Pi build pays for none of it.
+cloud-http = [
+    "dep:reqwest",
+    "dep:hmac",
+    "dep:sha2",
+    "dep:hex",
+    "dep:base64",
+    "dep:tokio",
+]
+
 [dependencies]
 aether-core.workspace = true
+base64 = { workspace = true, optional = true }
+hex = { version = "0.4", optional = true }
+hmac = { version = "0.12", optional = true }
+reqwest = { version = "0.12", default-features = false, features = [
+    "rustls-tls",
+    "json",
+], optional = true }
 serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+sha2 = { version = "0.10", optional = true }
 thiserror.workspace = true
+tokio = { workspace = true, features = ["time"], optional = true }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "io-util", "net", "sync", "time"] }
 
 [lints]
 workspace = true
+

@@ -61,6 +61,32 @@ impl NodeRegistry {
         Ok(())
     }
 
+    /// Folds a link measurement into what is known about a node.
+    ///
+    /// Samples are smoothed, so one slow probe does not move the scheduler far.
+    pub fn record_link(
+        &mut self,
+        node_id: NodeId,
+        latency_ms: f32,
+        bandwidth_bytes_per_sec: Option<u64>,
+    ) {
+        let Some(entry) = self.nodes.get_mut(&node_id) else {
+            return;
+        };
+
+        entry.info.latency_ms = Some(crate::probe::smooth(
+            entry.info.latency_ms.map(f64::from),
+            f64::from(latency_ms),
+        ) as f32);
+
+        if let Some(sample) = bandwidth_bytes_per_sec {
+            entry.info.bandwidth_bytes_per_sec = Some(crate::probe::smooth(
+                entry.info.bandwidth_bytes_per_sec.map(|value| value as f64),
+                sample as f64,
+            ) as u64);
+        }
+    }
+
     pub fn get(&self, node_id: NodeId) -> Option<&NodeEntry> {
         self.nodes.get(&node_id)
     }

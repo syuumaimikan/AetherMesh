@@ -101,7 +101,7 @@ impl Harness {
     fn fill<S, T>(&self, mut controller: Controller<S, T>) -> Controller<S, T>
     where
         S: aether_scheduler::Scheduler,
-        T: aether_controller::TaskTransport,
+        T: aether_controller::TaskTransport + Send,
     {
         for info in self.state.registry.lock().unwrap().nodes() {
             controller.registry_mut().register(info);

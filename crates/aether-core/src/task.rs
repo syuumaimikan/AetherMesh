@@ -17,6 +17,11 @@ pub mod kind {
     pub const HASH: &str = "hash";
     /// Runs a fixed amount of integer arithmetic (payload: iteration count).
     pub const CPU: &str = "cpu";
+    /// Runs the task's WebAssembly module over the payload.
+    ///
+    /// This is how work written in TypeScript, Go, C, or anything else with a
+    /// WASM target runs on a node — sandboxed, with no host access.
+    pub const WASM: &str = "wasm";
 }
 
 /// A unit of work.
@@ -30,6 +35,11 @@ pub struct Task {
     pub payload: Vec<u8>,
     /// Datasets this task reads. The scheduler prefers nodes that already hold them.
     pub inputs: Vec<DataId>,
+    /// WebAssembly module to run, for `kind::WASM` tasks.
+    ///
+    /// The module is published like any other dataset, so it is content-
+    /// addressed, deduplicated, and transferred to each node only once.
+    pub module: Option<DataId>,
 }
 
 impl Task {
@@ -39,12 +49,35 @@ impl Task {
             kind: kind.into(),
             payload,
             inputs: Vec::new(),
+            module: None,
+        }
+    }
+
+    /// A task that runs `module` over `payload`.
+    ///
+    /// The module is listed as an input too, so it travels the same
+    /// deduplicated path as data and the scheduler counts it toward locality.
+    pub fn wasm(module: DataId, payload: Vec<u8>) -> Self {
+        Self {
+            id: TaskId::generate(),
+            kind: kind::WASM.to_string(),
+            payload,
+            inputs: vec![module],
+            module: Some(module),
         }
     }
 
     /// Declares the datasets this task needs.
+    ///
+    /// The module of a WASM task stays in the list: it has to reach the node
+    /// like everything else the task reads.
     pub fn with_inputs(mut self, inputs: Vec<DataId>) -> Self {
-        self.inputs = inputs;
+        self.inputs = match self.module {
+            Some(module) if !inputs.contains(&module) => {
+                std::iter::once(module).chain(inputs).collect()
+            }
+            _ => inputs,
+        };
         self
     }
 
@@ -112,6 +145,26 @@ impl TaskResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_wasm_task_carries_its_module_as_an_input() {
+        let module = crate::DataId::of(b"module bytes");
+        let task = Task::wasm(module, b"input".to_vec());
+
+        assert_eq!(task.kind, kind::WASM);
+        assert_eq!(task.module, Some(module));
+        assert_eq!(task.inputs, vec![module]);
+    }
+
+    #[test]
+    fn declaring_extra_inputs_keeps_the_module() {
+        let module = crate::DataId::of(b"module bytes");
+        let dataset = crate::DataId::of(b"dataset");
+
+        let task = Task::wasm(module, Vec::new()).with_inputs(vec![dataset]);
+
+        assert_eq!(task.inputs, vec![module, dataset]);
+    }
 
     #[test]
     fn tasks_get_distinct_ids() {

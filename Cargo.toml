@@ -1,4 +1,4 @@
-[workspace]
+﻿[workspace]
 resolver = "3"
 members = [
     "crates/aether-core",
@@ -14,7 +14,7 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 license = "MIT OR Apache-2.0"
 
 [workspace.lints.rust]
@@ -29,6 +29,7 @@ aether-scheduler = { path = "crates/aether-scheduler" }
 aether-wasm = { path = "crates/aether-wasm", default-features = false }
 
 anyhow = "1"
+base64 = "0.22"
 bincode = "2"
 blake3 = "1"
 clap = "4"
@@ -46,3 +47,4 @@ tracing = "0.1"
 tracing-subscriber = "0.3"
 serde_json = "1"
 uuid = "1"
+

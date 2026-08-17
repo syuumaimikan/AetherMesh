@@ -4,12 +4,14 @@
 
 AetherMesh is a Rust layer that sits *on top of* whatever you already run — AWS, GCP, Azure, a VPS, bare metal, the desktop under your desk, a Raspberry Pi — and decides **where each task should run and how few bytes have to move to get it done**.
 
-In a 100-task benchmark over a shared 8 MiB dataset, that decision is worth **99.9 % less traffic** ([how this is measured](#benchmarks)).
+Write the work in TypeScript, Rust, Go, or anything that compiles to WebAssembly; submit it from Node with a dependency-free SDK. In a 100-task benchmark over a shared 8 MiB dataset, the placement decision is worth **99.9 % less traffic** ([how this is measured](#benchmarks)).
 
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
-[![Tests](https://img.shields.io/badge/tests-173%20passing-brightgreen.svg)](#contributing)
+[![Tests](https://img.shields.io/badge/tests-256%20passing-brightgreen.svg)](#contributing)
 [![Status](https://img.shields.io/badge/status-alpha-yellow.svg)](#project-status)
+
+**日本語のドキュメントは [README.ja.md](README.ja.md) にあります。**
 
 ---
 
@@ -58,25 +60,32 @@ Lower wins. Every weight is configurable and the score comes back term by term, 
 
 Heartbeats stop → the node is evicted and its data locations are forgotten. A node refuses a task → the task is re-dispatched to the next best node, data and all. A task that *ran* and failed is returned as a result, not retried forever.
 
-### Tasks carry data, never code
+### Your language, someone else's machine
 
-A task names a built-in operation (`echo`, `hash`, `cpu`) plus an opaque payload. Arbitrary code is never shipped to a node; unknown task kinds come back as a failed result, not as an execution and not as a panic.
+Tasks run as **WebAssembly**, so the work can be written in TypeScript, Rust, Go, C, or anything with a WASM target — and the node still never runs an unsandboxed process. A module gets memory, an input buffer, and a fuel budget. It gets no filesystem, no network, no clock, and no host functions at all.
+
+```ts
+const module = await mesh.publishFile("uppercase.wasm");
+const result = await mesh.runWasm(module.dataId, new TextEncoder().encode("hello"));
+new TextDecoder().decode(result.output); // "HELLO"
+```
+
+The module is published like any dataset, so a 5 MB module reaches each node once and the scheduler counts it toward locality. An endless loop costs one task, not the node. Details and per-language build recipes: [`docs/wasm-tasks.md`](docs/wasm-tasks.md).
 
 ---
 
 ## Project status
 
-**Alpha — all 20 planned phases are implemented, covered by 173 tests, and not yet battle-tested.**
+**Alpha — everything on the roadmap is implemented, covered by 256 tests, and not yet battle-tested.**
 
-Working today: core types, wire protocol, node registry, metrics collection, three schedulers, TCP transport with optional TLS, token authentication, persistent node identity, remote execution of built-in tasks, content-addressed and chunked transfer with dedup, adaptive compression, retries and heartbeat eviction, TOML configuration, counters and structured logs, a cloud-provider seam, and a benchmark harness with baseline comparison.
+Working today: core types, wire protocol, node registry, metrics collection, three schedulers, TCP transport with TLS and optional mutual TLS on both listeners, shared and per-node tokens, persistent node identity, built-in and WebAssembly task execution with opt-in host capabilities, content-addressed and chunked transfer with dedup, transfer across several parallel connections, adaptive compression, retries and heartbeat eviction, measured latency and bandwidth feeding the scheduler, a JSON client API with TypeScript, Python, and Go SDKs, TOML configuration, counters and structured logs, cloud adapters for Kubernetes, AWS, GCP, Azure and local processes, and benchmarks against both a naive baseline and Dask.
 
-Honest gaps, all of them tracked below in [Roadmap](#roadmap):
+Honest limits — what is implemented but not proven, rather than missing:
 
-- No task submission CLI — you submit through the library API.
-- One shared token for the whole mesh; no per-node credentials or client certificates.
-- Bandwidth and latency are values you supply; nothing measures them yet.
-- No cloud SDK adapters yet — `CloudProvider` is the seam, `StaticProvider` is the only implementation.
-- Chunks are sent sequentially, though the design allows parallel transfer.
+- **The cloud adapters are tested against their HTTP contract, not against the real clouds.** Each one is exercised with a stub server that checks the request it sends and the response it parses; nobody has run them against a live AWS or GKE account from this repository. Expect to hit the details a real account teaches you.
+- **WASM capabilities are off by default.** A module can read the datasets the task declared; a clock, randomness, and logging are grants an operator makes deliberately. There is still no filesystem and no network, and there is not going to be.
+- **Percentile numbers come from loopback.** The Dask comparison and the internal benchmark both run on one machine.
+- **No formal security review.** Mutual TLS, constant-time token comparison, and a sandbox with no host access are the design; a review is not the same as a design.
 
 ---
 
@@ -103,6 +112,19 @@ cargo run -p aether-agent -- --controller 127.0.0.1:7000 --heartbeat-secs 5
 ```
 INFO aether_controller: controller listening addr=127.0.0.1:7000 auth=false tls=false
 INFO aether_controller::server: node registered node_id=9c5e43a0-… hostname=syuum
+```
+
+Submit work from Node — no npm install, no build step on Node 22.6+:
+
+```bash
+cargo run -p aether-wasm --example wat2wasm -- examples/wasm/uppercase.wat uppercase.wasm
+node sdk/typescript/examples/wasm.ts uppercase.wasm "hello from typescript"
+```
+
+```
+module 58e46fef2361318a… (233 bytes)
+output: HELLO FROM TYPESCRIPT
+ran on aebf4c04 in 2.02 ms
 ```
 
 See the whole dispatch path with no network at all:
@@ -180,12 +202,40 @@ flowchart LR
 | `aether-scheduler` | `Scheduler` trait, data catalog, three placement policies. |
 | `aether-controller` | Registry, connections, dispatch, retries, health, server (TCP/TLS), simulated mesh. |
 | `aether-agent` | Worker: identity, registration, metrics, data store, built-in task execution. |
-| `aether-cloud` | `CloudProvider` seam: discover resources, deploy workers, read provider metrics. |
+| `aether-wasm` | Sandboxed WebAssembly execution, on `wasmi` (default) or `wasmtime`. |
+| `aether-cloud` | `CloudProvider` adapters: Kubernetes, AWS EC2, GCP Compute, Azure VMs, local processes. |
 | `aether-benchmark` | Baseline-vs-AetherMesh measurement with JSON output. |
+| `sdk/typescript`, `sdk/python`, `sdk/go` | Dependency-free clients: publish, submit, run WASM. |
 
 ---
 
 ## Benchmarks
+
+### Against Dask
+
+[Dask distributed](https://distributed.dask.org) is the closest widely used system to compare against: a scheduler, workers, tasks that carry data.
+
+```bash
+python -m pip install "dask[distributed]"
+cargo build --release -p aether-controller -p aether-agent
+python bench/comparison/compare.py --tasks 100 --workers 3
+```
+
+100 tasks, 3 workers, one 16-core machine, loopback:
+
+| system | workload | tasks/s | wall ms | p50 ms | p99 ms |
+|---|---|---:|---:|---:|---:|
+| **aethermesh** | overhead | **5,503** | 18 | **0.17** | **0.26** |
+| dask | overhead | 63 | 1,582 | 15.39 | 39.09 |
+| **aethermesh** | dataset (8 MiB) | **402** | 249 | **1.67** | **2.47** |
+| dask-scatter | dataset (8 MiB) | 31 | 3,232 | 30.86 | 46.18 |
+| dask-naive | dataset (8 MiB) | 21 | 4,699 | 40.39 | 87.56 |
+
+`dask-naive` closes over the dataset, so a copy travels with every task. `dask-scatter` calls `client.scatter(..., broadcast=True)` first, which is the idiomatic fix. **AetherMesh behaves like the scatter case without being asked.**
+
+**What this does not show.** The task bodies are not identical — Dask runs a Python callable hashing with `hashlib.blake2b`, AetherMesh runs its Rust BLAKE3 built-in — so the dataset rows mix framework cost with a language difference, and the **overhead row is the fair framework-to-framework number**. Dask also does far more than AetherMesh: arbitrary Python callables, task graphs, dataframes, spilling, a dashboard. And this is loopback on one machine, not a network. Methodology and full caveats: [`docs/benchmarks.md`](docs/benchmarks.md).
+
+### Against a naive dispatcher
 
 ```bash
 cargo run -p aether-benchmark -- compare --tasks 100 --nodes 3 --kind hash --dataset-bytes 8388608
@@ -207,6 +257,47 @@ JSON for CI or dashboards:
 
 ```bash
 cargo run -p aether-benchmark -- compare --format json --output report.json
+```
+
+---
+
+## Speaking to it from any language
+
+The controller exposes a second listener for clients: four bytes of big-endian length, then one JSON object, both directions. Five message types cover everything — `hello`, `publish`, `submit`, `nodes`, and the responses.
+
+```json
+{"type":"submit","kind":"wasm","module":"58e46f…","payload":"aGVsbG8="}
+{"type":"result","success":true,"output":"SEVMTE8=","node_id":"aebf4c04…","duration_ms":2.02}
+```
+
+That is a couple of hundred lines in any language with a socket — which is exactly what the three SDKs are. None of them has a runtime dependency.
+
+```python
+# sdk/python
+from aethermesh import AetherMesh
+
+with AetherMesh.connect(port=7100) as mesh:
+    data = mesh.publish(open("input.bin", "rb").read())
+    result = mesh.run("hash", b"seed", inputs=[data.data_id])
+```
+
+```go
+// sdk/go
+mesh, _ := aethermesh.Connect(aethermesh.Options{Port: 7100})
+data, _ := mesh.Publish(payload)
+result, _ := mesh.Run("hash", []byte("seed"), []string{data.DataID})
+```
+
+The TypeScript SDK ([`sdk/typescript`](sdk/typescript)) is the reference implementation:
+
+```ts
+import { AetherMesh } from "@aethermesh/client";
+
+const mesh = await AetherMesh.connect({ port: 7100, token: process.env.AETHERMESH_TOKEN });
+const dataset = await mesh.publish(bigBuffer);          // moved once, reused after
+const result = await mesh.run("hash", seed, [dataset.dataId]);
+await mesh.nodes();                                      // who is in the mesh right now
+mesh.close();
 ```
 
 ---
@@ -241,7 +332,7 @@ println!("{:?} in {:?}", result.output(), result.duration);
 
 ## Roadmap
 
-All 20 development phases are complete:
+Every development phase is complete:
 
 - [x] 1–5 Workspace, core types, protocol, node registry, agent metrics
 - [x] 6–7 Scheduler MVP, dispatch simulation
@@ -254,15 +345,20 @@ All 20 development phases are complete:
 - [x] 18 Multi-node environment: 3 agents over real TCP, deployment guide
 - [x] 19 `CloudProvider` seam: discover resources, deploy workers, read metrics
 - [x] 20 Production architecture: TLS, token auth, node identity, config, metrics
+- [x] 21 Multi-language: WebAssembly tasks, JSON client API, TypeScript SDK
+- [x] 22 Python and Go SDKs, dataset imports for WASM tasks, measured latency and
+      bandwidth, per-node tokens, TLS on the client API, pipelined chunk sends,
+      a provider that really deploys agents, and a comparison benchmark vs Dask
+- [x] 23 Cloud adapters (Kubernetes, AWS EC2, GCP Compute, Azure VMs), parallel
+      chunk transfer over several connections, mutual TLS, opt-in WASM host
+      capabilities, and a compile- and run-verified Go SDK
 
 What comes next, and where help is most welcome:
 
-- [ ] Task submission CLI and a small HTTP control surface
-- [ ] Per-node credentials / mutual TLS instead of one shared token
-- [ ] Measured bandwidth and latency feeding the scheduler automatically
-- [ ] Parallel chunk transfer across connections
-- [ ] Cloud adapters behind `CloudProvider` (AWS, GCP, Azure, Kubernetes)
+- [ ] Running the cloud adapters against real accounts and fixing what that teaches
 - [ ] QUIC transport — the framing layer is already transport-independent
+- [ ] A security review of the sandbox and the credential paths
+- [ ] Scheduling across regions with cost as a term in the score
 
 ---
 
@@ -274,14 +370,19 @@ Correctness → Simplicity → Performance → Extensibility
 
 - `#![forbid(unsafe_code)]` across the workspace.
 - No `unwrap()` outside tests; every failure is a `thiserror` type.
-- Dependencies arrive when a phase needs them, never before. The whole tree: tokio, serde, bincode, blake3, lz4_flex, sysinfo, clap, tracing, toml — plus rustls only if you enable `tls`.
+- Dependencies arrive when a phase needs them, never before. The whole tree: tokio, serde, bincode, blake3, lz4_flex, sysinfo, clap, tracing, toml, base64, wasmi — plus rustls only if you enable `tls`, and wasmtime only if you ask for the JIT.
 - Pure-Rust crypto and compression, so a Raspberry Pi cross-build needs no C toolchain.
 - Every phase ends green: `cargo fmt --check`, `cargo check`, `cargo test`.
 
 ```bash
 cargo test --workspace
-cargo test --workspace --features aether-controller/tls,aether-agent/tls
+cargo test --workspace --features aether-controller/tls,aether-agent/tls,aether-cloud/cloud-http
+cargo test -p aether-wasm --no-default-features --features wasmtime-backend
 ```
+
+Features are opt-in so a small target pays for nothing it does not use: `tls`
+(rustls), `cloud-http` (the provider adapters), `wasm` / `wasm-jit` (interpreter
+or JIT).
 
 ---
 
@@ -308,15 +409,10 @@ at your option.
 
 ## 日本語
 
-AetherMesh は、既存のクラウドを置き換えるのではなく、**その上に載せる通信・データ転送・処理配置の最適化レイヤー**です。
+日本語の完全なドキュメントは **[README.ja.md](README.ja.md)** にあります（設計・使い方・ベンチマークの読み方・既知の限界まで）。
 
-- **Compute Follows Data** — データを処理へ送るのではなく、その方が安いときは処理をデータの近くへ送る
-- **BLAKE3 content addressing** — 同じデータは二度転送しない。大きなデータは chunk 単位で重複排除
-- **適応的圧縮** — サイズと回線速度で圧縮可否を判断し、実際に縮まなければ送らない
-- **スコアリング型スケジューラ** — `compute + transfer + latency − locality`、係数は設定可能
-- **障害復旧** — heartbeat 切れのノードは退去、配送失敗のタスクは別ノードへ再配置
-- **セキュリティ** — TLS（`tls` feature）、共有トークン認証、再起動しても変わらないノード ID
+関連ドキュメント:
 
-計画していた 20 フェーズはすべて実装済み（173 テスト）ですが、実運用実績はまだありません。認証は単一の共有トークンのみで、帯域・レイテンシは利用者が設定する値です。ベンチマークの数値は in-process 計測であり、最適化レイヤの効果を示すもので、実ネットワーク性能ではありません。
-
-3 台構成（PC / Raspberry Pi / クラウド VM）の手順は [`docs/multi-node.md`](docs/multi-node.md) にあります。
+- 3 台構成（PC / Raspberry Pi / クラウド VM）: [`docs/multi-node.md`](docs/multi-node.md)
+- WASM タスクの書き方（Rust / AssemblyScript / TinyGo）: [`docs/wasm-tasks.md`](docs/wasm-tasks.md)
+- ベンチマークの方法論と注意点: [`docs/benchmarks.md`](docs/benchmarks.md)

@@ -22,8 +22,15 @@ pub struct AgentConfig {
     pub tls_ca_path: Option<PathBuf>,
     /// Name the controller's certificate is issued for.
     pub tls_server_name: Option<String>,
+    /// This agent's own certificate and key, when the controller requires
+    /// mutual TLS. Both are needed together.
+    pub tls_client_cert_path: Option<PathBuf>,
+    pub tls_client_key_path: Option<PathBuf>,
     /// Link speed toward this node, in bytes per second, if you know it.
     pub bandwidth_bytes_per_sec: Option<u64>,
+    /// Extra connections to offer for bulk data. Chunks are spread across them,
+    /// which helps when one TCP stream cannot fill the link.
+    pub data_channels: usize,
 }
 
 impl Default for AgentConfig {
@@ -36,7 +43,10 @@ impl Default for AgentConfig {
             identity_path: None,
             tls_ca_path: None,
             tls_server_name: None,
+            tls_client_cert_path: None,
+            tls_client_key_path: None,
             bandwidth_bytes_per_sec: None,
+            data_channels: 0,
         }
     }
 }
@@ -83,6 +93,13 @@ impl AgentConfig {
             }),
             None => Ok(Self::default()),
         }
+    }
+
+    /// This agent's certificate and key, when both are configured.
+    pub fn client_identity(&self) -> Option<(PathBuf, PathBuf)> {
+        self.tls_client_cert_path
+            .clone()
+            .zip(self.tls_client_key_path.clone())
     }
 
     /// The name to verify the controller's certificate against, defaulting to

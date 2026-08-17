@@ -3,6 +3,7 @@
 //! Anything that is not in the file keeps its default, so a config can be as
 //! short as the one setting you care about. CLI flags win over the file.
 
+use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -16,26 +17,50 @@ use crate::security::SecurityConfig;
 #[serde(default, deny_unknown_fields)]
 pub struct ControllerConfig {
     pub listen: SocketAddr,
+    /// Address the client API listens on (publish data, submit tasks).
+    /// Omit to run without a client API.
+    pub client_listen: Option<SocketAddr>,
     /// Seconds without a heartbeat before a node is evicted.
     pub heartbeat_timeout_secs: u64,
     /// Token every agent must present. Omit to accept any agent.
     pub auth_token: Option<String>,
+    /// Per-node tokens, keyed by a label. Any of them is accepted, so one
+    /// node's credential can be revoked without re-keying the mesh.
+    pub node_tokens: BTreeMap<String, String>,
     /// Certificate and key. Omit to serve plaintext.
     pub tls_cert_path: Option<PathBuf>,
     pub tls_key_path: Option<PathBuf>,
+    /// CA that agent and client certificates must be signed by. Setting it
+    /// turns on mutual TLS, so a peer without a certificate never gets as far
+    /// as presenting a token.
+    pub tls_client_ca_path: Option<PathBuf>,
     /// Seconds between metrics log lines. Zero turns them off.
     pub metrics_interval_secs: u64,
+    /// Seconds between link measurements. Zero turns probing off, leaving the
+    /// scheduler on whatever latency and bandwidth were configured by hand.
+    pub probe_interval_secs: u64,
+    /// Ballast in the bandwidth probe.
+    pub probe_bytes: usize,
 }
 
 impl Default for ControllerConfig {
     fn default() -> Self {
         Self {
             listen: "127.0.0.1:7000".parse().expect("valid default address"),
+            client_listen: Some(
+                "127.0.0.1:7100"
+                    .parse()
+                    .expect("valid default client address"),
+            ),
             heartbeat_timeout_secs: 30,
             auth_token: None,
+            node_tokens: BTreeMap::new(),
             tls_cert_path: None,
             tls_key_path: None,
+            tls_client_ca_path: None,
             metrics_interval_secs: 60,
+            probe_interval_secs: 60,
+            probe_bytes: crate::probe::DEFAULT_PROBE_BYTES,
         }
     }
 }
@@ -99,6 +124,7 @@ impl ControllerConfig {
     pub fn security(&self) -> SecurityConfig {
         SecurityConfig {
             auth_token: self.auth_token.clone(),
+            node_tokens: self.node_tokens.clone(),
         }
     }
 
@@ -109,6 +135,11 @@ impl ControllerConfig {
     /// Certificate and key, when both are configured.
     pub fn tls_paths(&self) -> Option<(PathBuf, PathBuf)> {
         self.tls_cert_path.clone().zip(self.tls_key_path.clone())
+    }
+
+    /// CA for client certificates, when mutual TLS is configured.
+    pub fn client_ca_path(&self) -> Option<PathBuf> {
+        self.tls_client_ca_path.clone()
     }
 }
 

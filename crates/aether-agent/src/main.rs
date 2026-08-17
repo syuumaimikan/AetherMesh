@@ -33,6 +33,23 @@ struct Args {
     /// Certificate to verify the controller against (enables TLS).
     #[arg(long)]
     tls_ca: Option<PathBuf>,
+
+    /// This agent's own certificate, for mutual TLS.
+    #[arg(long, requires = "tls_client_key")]
+    tls_client_cert: Option<PathBuf>,
+
+    /// Key for `--tls-client-cert`.
+    #[arg(long, requires = "tls_client_cert")]
+    tls_client_key: Option<PathBuf>,
+
+    /// File holding this node's persistent id. Several agents on one machine
+    /// each need their own, or they register as the same node.
+    #[arg(long)]
+    identity_path: Option<PathBuf>,
+
+    /// Extra connections to offer for bulk data transfer.
+    #[arg(long)]
+    data_channels: Option<usize>,
 }
 
 #[tokio::main]
@@ -55,6 +72,16 @@ async fn main() -> anyhow::Result<()> {
     }
     if args.tls_ca.is_some() {
         config.tls_ca_path = args.tls_ca.clone();
+    }
+    if args.identity_path.is_some() {
+        config.identity_path = args.identity_path.clone();
+    }
+    if args.tls_client_cert.is_some() {
+        config.tls_client_cert_path = args.tls_client_cert.clone();
+        config.tls_client_key_path = args.tls_client_key.clone();
+    }
+    if let Some(channels) = args.data_channels {
+        config.data_channels = channels;
     }
 
     // A restarted agent keeps its identity, so the controller sees one node.
@@ -80,7 +107,12 @@ async fn main() -> anyhow::Result<()> {
     match config.tls_ca_path.clone() {
         #[cfg(feature = "tls")]
         Some(ca_path) => {
-            let connector = aether_agent::tls::connector(&ca_path)?;
+            let connector = match config.client_identity() {
+                Some((cert, key)) => {
+                    aether_agent::tls::connector_with_client_cert(&ca_path, &cert, &key)?
+                }
+                None => aether_agent::tls::connector(&ca_path)?,
+            };
             let mut client = aether_agent::tls::connect(
                 &config.controller,
                 &config.server_name(),
@@ -100,6 +132,17 @@ async fn main() -> anyhow::Result<()> {
                 config.auth_token.clone(),
             )
             .await?;
+
+            // Extra connections are opened before the run loop starts, so the
+            // first large transfer already has them.
+            let _channels = client
+                .open_data_channels(
+                    &config.controller,
+                    config.data_channels,
+                    config.auth_token.clone(),
+                )
+                .await?;
+
             client.run(MetricsCollector::new(), heartbeat).await?;
         }
     }

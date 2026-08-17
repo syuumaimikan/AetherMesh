@@ -94,6 +94,30 @@ pub trait TaskTransport {
         codec: Codec,
         bytes: &[u8],
     ) -> impl Future<Output = Result<(), DispatchError>> + Send;
+
+    /// Delivers several chunks at once.
+    ///
+    /// The default sends them one after another. A transport that can pipeline
+    /// — queue every chunk without waiting for each to be flushed — should
+    /// override this; over a socket that is the difference between one
+    /// round trip per chunk and one for the batch.
+    fn send_chunks(
+        &mut self,
+        node_id: NodeId,
+        data_id: DataId,
+        chunks: Vec<(u32, Codec, Vec<u8>)>,
+    ) -> impl Future<Output = Result<(), DispatchError>> + Send
+    where
+        Self: Send,
+    {
+        async move {
+            for (index, codec, bytes) in chunks {
+                self.send_chunk(node_id, data_id, index, codec, &bytes)
+                    .await?;
+            }
+            Ok(())
+        }
+    }
 }
 
 /// Whether another node is worth trying.
@@ -128,7 +152,9 @@ pub struct Controller<S, T> {
     chunks_skipped: u64,
 }
 
-impl<S: Scheduler, T: TaskTransport> Controller<S, T> {
+// `Send` is required because the transport batches chunk sends, and a batched
+// send has to be able to cross an await point in a spawned task.
+impl<S: Scheduler, T: TaskTransport + Send> Controller<S, T> {
     /// Builds a controller whose scheduler reads the same catalog it writes.
     pub fn new(scheduler: S, transport: T, catalog: DataCatalog) -> Self {
         Self {
@@ -191,6 +217,18 @@ impl<S: Scheduler, T: TaskTransport> Controller<S, T> {
 
     pub fn registry_mut(&mut self) -> &mut NodeRegistry {
         &mut self.registry
+    }
+
+    /// Replaces the controller's view of the mesh with `nodes`.
+    ///
+    /// The live registry belongs to the server; a long-running controller calls
+    /// this before scheduling so it never places work on a node that has left.
+    pub fn sync_registry(&mut self, nodes: Vec<aether_core::NodeInfo>) {
+        let mut registry = NodeRegistry::new();
+        for info in nodes {
+            registry.register(info);
+        }
+        self.registry = registry;
     }
 
     pub fn transport(&self) -> &T {
@@ -347,6 +385,7 @@ impl<S: Scheduler, T: TaskTransport> Controller<S, T> {
         let data_id = manifest.data.id;
         self.transport.send_manifest(node_id, manifest).await?;
 
+        let mut batch = Vec::new();
         for (index, chunk) in manifest.indexed() {
             // Chunks are content-addressed, so a repeated chunk - inside this
             // dataset or shared with another - is never sent to a node twice.
@@ -361,14 +400,18 @@ impl<S: Scheduler, T: TaskTransport> Controller<S, T> {
             // Each chunk is judged on its own: a compressible chunk is
             // compressed even if its neighbours are not.
             let (codec, payload) = self.compression.encode(&bytes[range], bandwidth);
-            self.transport
-                .send_chunk(node_id, data_id, index, codec, &payload)
-                .await?;
+
             self.catalog.record(chunk, node_id);
             self.data_bytes_sent += payload.len() as u64;
             self.data_bytes_uncompressed += chunk.size_bytes;
+            batch.push((index, codec, payload));
         }
-        Ok(())
+
+        if batch.is_empty() {
+            return Ok(());
+        }
+        // Handed over as one batch so the transport can pipeline it.
+        self.transport.send_chunks(node_id, data_id, batch).await
     }
 }
 

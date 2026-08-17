@@ -13,9 +13,38 @@ use std::collections::BTreeMap;
 use aether_core::{NodeId, NodeMetrics};
 use serde::{Deserialize, Serialize};
 
+pub mod process;
 pub mod r#static;
 
+#[cfg(feature = "cloud-http")]
+pub mod aws;
+#[cfg(feature = "cloud-http")]
+pub mod azure;
+#[cfg(feature = "cloud-http")]
+pub mod gcp;
+#[cfg(feature = "cloud-http")]
+pub mod http;
+#[cfg(feature = "cloud-http")]
+pub mod kubernetes;
+#[cfg(feature = "cloud-http")]
+mod sigv4;
+
+#[cfg(all(test, feature = "cloud-http"))]
+mod testing;
+
+pub use process::ProcessProvider;
 pub use r#static::StaticProvider;
+
+#[cfg(feature = "cloud-http")]
+pub use aws::{AwsProvider, LaunchTemplate};
+#[cfg(feature = "cloud-http")]
+pub use azure::{AzureProvider, VmTemplate};
+#[cfg(feature = "cloud-http")]
+pub use gcp::{GcpProvider, InstanceTemplate};
+#[cfg(feature = "cloud-http")]
+pub use http::{Credentials, HttpClient};
+#[cfg(feature = "cloud-http")]
+pub use kubernetes::KubernetesProvider;
 
 /// Something went wrong talking to a provider.
 #[derive(Debug, thiserror::Error)]
@@ -26,6 +55,18 @@ pub enum CloudError {
     DeployFailed { resource: String, reason: String },
     #[error("provider request failed: {0}")]
     Request(String),
+    /// The provider asked us to slow down. Retried automatically.
+    #[error("provider throttled the request: {detail}")]
+    Throttled { detail: String },
+    /// A transient server-side failure. Retried automatically.
+    #[error("provider is unavailable: {detail}")]
+    Unavailable { detail: String },
+    /// The credentials were rejected. Retrying will not help.
+    #[error("provider rejected the credentials: {detail}")]
+    Unauthorized { detail: String },
+    /// The resource is not there.
+    #[error("provider has no such resource: {detail}")]
+    NotFound { detail: String },
 }
 
 /// A place a worker could run: a VM, a Kubernetes node, a Pi on a shelf.

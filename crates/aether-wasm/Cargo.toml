@@ -1,4 +1,4 @@
-[package]
+﻿[package]
 name = "aether-wasm"
 version.workspace = true
 edition.workspace = true
@@ -15,8 +15,9 @@ wasmtime-backend = ["dep:wasmtime"]
 
 [dependencies]
 thiserror.workspace = true
+tracing.workspace = true
 wasmi = { version = "0.46", optional = true }
-wasmtime = { version = "34", optional = true, default-features = false, features = [
+wasmtime = { version = "36.0.13", optional = true, default-features = false, features = [
     "cranelift",
     "runtime",
     "std",
@@ -27,3 +28,4 @@ wat = "1"
 
 [lints]
 workspace = true
+

@@ -29,6 +29,8 @@ pub enum TlsClientError {
     },
     #[error("{0} contains no certificates")]
     NoCertificates(PathBuf),
+    #[error("{0} contains no private key")]
+    NoPrivateKey(PathBuf),
     #[error("rustls rejected the configuration: {0}")]
     Rustls(#[from] rustls::Error),
     #[error("{0} is not a valid server name")]
@@ -39,31 +41,69 @@ pub enum TlsClientError {
     Client(#[from] ClientError),
 }
 
-/// Builds a connector that trusts the certificates in `ca_path`.
-pub fn connector(ca_path: &Path) -> Result<TlsConnector, TlsClientError> {
-    let pem = std::fs::read(ca_path).map_err(|source| TlsClientError::Io {
-        path: ca_path.to_path_buf(),
+/// Reads a PEM file's certificates.
+fn certificates(path: &Path) -> Result<Vec<CertificateDer<'static>>, TlsClientError> {
+    let pem = std::fs::read(path).map_err(|source| TlsClientError::Io {
+        path: path.to_path_buf(),
         source,
     })?;
 
     let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut pem.as_slice())
         .collect::<Result<_, _>>()
         .map_err(|source| TlsClientError::Io {
-            path: ca_path.to_path_buf(),
+            path: path.to_path_buf(),
             source,
         })?;
-    if certs.is_empty() {
-        return Err(TlsClientError::NoCertificates(ca_path.to_path_buf()));
-    }
 
+    if certs.is_empty() {
+        return Err(TlsClientError::NoCertificates(path.to_path_buf()));
+    }
+    Ok(certs)
+}
+
+/// Builds a connector that trusts the certificates in `ca_path`.
+pub fn connector(ca_path: &Path) -> Result<TlsConnector, TlsClientError> {
+    build_connector(ca_path, None)
+}
+
+/// Same, presenting a client certificate — the agent's half of mutual TLS.
+pub fn connector_with_client_cert(
+    ca_path: &Path,
+    cert_path: &Path,
+    key_path: &Path,
+) -> Result<TlsConnector, TlsClientError> {
+    build_connector(ca_path, Some((cert_path, key_path)))
+}
+
+fn build_connector(
+    ca_path: &Path,
+    client_identity: Option<(&Path, &Path)>,
+) -> Result<TlsConnector, TlsClientError> {
     let mut roots = RootCertStore::empty();
-    for cert in certs {
+    for cert in certificates(ca_path)? {
         roots.add(cert)?;
     }
 
-    let config = ClientConfig::builder()
-        .with_root_certificates(roots)
-        .with_no_client_auth();
+    let builder = ClientConfig::builder().with_root_certificates(roots);
+    let config = match client_identity {
+        Some((cert_path, key_path)) => {
+            let certs = certificates(cert_path)?;
+            let key_pem = std::fs::read(key_path).map_err(|source| TlsClientError::Io {
+                path: key_path.to_path_buf(),
+                source,
+            })?;
+            let key = rustls_pemfile::private_key(&mut key_pem.as_slice())
+                .map_err(|source| TlsClientError::Io {
+                    path: key_path.to_path_buf(),
+                    source,
+                })?
+                .ok_or_else(|| TlsClientError::NoPrivateKey(key_path.to_path_buf()))?;
+
+            builder.with_client_auth_cert(certs, key)?
+        }
+        None => builder.with_no_client_auth(),
+    };
+
     Ok(TlsConnector::from(Arc::new(config)))
 }
 

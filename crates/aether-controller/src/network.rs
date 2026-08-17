@@ -126,6 +126,53 @@ impl TaskTransport for NetworkTransport {
             },
         )
     }
+
+    /// Spreads the batch across every connection the agent offered, then waits
+    /// for the agent to say the dataset is complete.
+    ///
+    /// The wait is what makes parallelism safe: with chunks in flight on
+    /// several connections there is no ordering between them and the task that
+    /// reads the data, so the agent confirms assembly explicitly.
+    async fn send_chunks(
+        &mut self,
+        node_id: NodeId,
+        data_id: DataId,
+        chunks: Vec<(u32, Codec, Vec<u8>)>,
+    ) -> Result<(), DispatchError> {
+        let count = chunks.len();
+        let channels = self.connections.data_channel_count(node_id);
+        let ready = self.connections.expect_data(node_id, data_id);
+
+        for (index, codec, bytes) in chunks {
+            let message = Message::DataChunk {
+                node_id,
+                data_id,
+                index,
+                codec,
+                bytes,
+            };
+            if let Err(error) = self.connections.send_bulk(node_id, message) {
+                self.connections.forget_data(node_id, data_id);
+                return Err(error);
+            }
+        }
+        debug!(%node_id, %data_id, count, channels, "chunks queued");
+
+        match tokio::time::timeout(self.timeout, ready).await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(_)) => Err(DispatchError::Unreachable {
+                node_id,
+                reason: "connection closed before the data was assembled".to_string(),
+            }),
+            Err(_) => {
+                self.connections.forget_data(node_id, data_id);
+                Err(DispatchError::Unreachable {
+                    node_id,
+                    reason: format!("data {data_id} was not assembled within {:?}", self.timeout),
+                })
+            }
+        }
+    }
 }
 
 #[cfg(test)]

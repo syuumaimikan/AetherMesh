@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aethermesh"
+version = "0.1.0"
+description = "Python client for AetherMesh: publish data once, run tasks and WebAssembly modules across a mesh"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT OR Apache-2.0"
+keywords = ["aethermesh", "distributed", "wasm", "scheduler"]
+# No runtime dependencies: the protocol is a socket, struct, and json.
+dependencies = []
+
+[tool.setuptools]
+packages = ["aethermesh"]

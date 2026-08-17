@@ -23,8 +23,25 @@ pub enum Message {
         info: NodeInfo,
         token: Option<String>,
     },
+    /// Agent -> controller: an extra connection for bulk data.
+    ///
+    /// Chunks are self-describing, so they can travel over several connections
+    /// at once; this is how an agent offers more than one.
+    RegisterDataChannel {
+        protocol_version: u16,
+        node_id: NodeId,
+        token: Option<String>,
+    },
     /// Controller -> agent: registration accepted.
-    RegisterAccepted { node_id: NodeId },
+    ///
+    /// `channel_token` is what the agent presents when it opens extra data
+    /// connections. It proves those connections belong to this node, which the
+    /// mesh token — shared by every agent — cannot.
+    RegisterAccepted {
+        node_id: NodeId,
+        #[serde(default)]
+        channel_token: Option<String>,
+    },
     /// Controller -> agent: registration refused; the connection then closes.
     RegisterRejected { reason: String },
     /// Agent -> controller: still alive, with fresh metrics.
@@ -67,6 +84,19 @@ pub enum Message {
     TaskAssignment { node_id: NodeId, task: Task },
     /// Agent -> controller: the task finished.
     TaskCompleted { result: TaskResult },
+    /// Agent -> controller: a dataset is complete and verified locally.
+    ///
+    /// With chunks arriving over several connections there is no ordering to
+    /// rely on, so the controller waits for this before dispatching the task
+    /// that reads the data.
+    DataReady { node_id: NodeId, data_id: DataId },
+    /// Controller -> agent: measure the link.
+    ///
+    /// `padding` is ballast: timing a small ping against a large one is what
+    /// turns two round trips into a bandwidth estimate.
+    Ping { nonce: u64, padding: Vec<u8> },
+    /// Agent -> controller: ping received.
+    Pong { nonce: u64 },
 }
 
 impl Message {
@@ -88,6 +118,15 @@ impl Message {
         }
     }
 
+    /// Offers an extra connection for bulk data on behalf of `node_id`.
+    pub fn register_data_channel(node_id: NodeId, token: Option<String>) -> Self {
+        Self::RegisterDataChannel {
+            protocol_version: PROTOCOL_VERSION,
+            node_id,
+            token,
+        }
+    }
+
     /// Short name of the variant, for logs and metrics.
     pub fn kind(&self) -> &'static str {
         match self {
@@ -101,6 +140,10 @@ impl Message {
             Self::DataChunk { .. } => "data_chunk",
             Self::TaskAssignment { .. } => "task_assignment",
             Self::TaskCompleted { .. } => "task_completed",
+            Self::Ping { .. } => "ping",
+            Self::Pong { .. } => "pong",
+            Self::RegisterDataChannel { .. } => "register_data_channel",
+            Self::DataReady { .. } => "data_ready",
         }
     }
 }

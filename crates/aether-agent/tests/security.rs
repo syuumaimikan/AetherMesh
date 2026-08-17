@@ -137,6 +137,110 @@ mod tls {
         wait_for_registration(&state, node_id).await;
     }
 
+    /// A CA, a server certificate under it, and a client certificate under it.
+    ///
+    /// Returns the server config, then the CA the agent must trust, then the
+    /// agent's own certificate and key.
+    fn mutual_tls(
+        name: &str,
+    ) -> (
+        TlsConfig,
+        std::path::PathBuf,
+        std::path::PathBuf,
+        std::path::PathBuf,
+    ) {
+        let dir =
+            std::env::temp_dir().join(format!("aethermesh-mtls-{name}-{}", std::process::id()));
+        let ca_cert = dir.join("ca.pem");
+        let ca_key = dir.join("ca.key");
+        let server = TlsConfig::new(dir.join("server.pem"), dir.join("server.key"));
+
+        aether_controller::tls::generate_ca_and_cert(
+            &ca_cert,
+            &ca_key,
+            &server,
+            vec!["localhost".to_string()],
+        )
+        .unwrap();
+
+        let client_cert = dir.join("client.pem");
+        let client_key = dir.join("client.key");
+        aether_controller::tls::issue_client_cert(
+            &ca_cert,
+            &ca_key,
+            &client_cert,
+            &client_key,
+            vec!["agent".to_string()],
+        )
+        .unwrap();
+
+        (
+            server.with_client_ca(ca_cert.clone()),
+            ca_cert,
+            client_cert,
+            client_key,
+        )
+    }
+
+    #[tokio::test]
+    async fn an_agent_with_a_client_certificate_registers() {
+        let (server_tls, ca_cert, client_cert, client_key) = mutual_tls("accepted");
+        let state = MeshState::new();
+        let (listener, addr) = bind("127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let acceptor = aether_controller::tls::acceptor(&server_tls).unwrap();
+
+        let serve_state = state.clone();
+        tokio::spawn(async move {
+            let _ = aether_controller::serve_tls(
+                listener,
+                serve_state,
+                SecurityConfig::open(),
+                acceptor,
+            )
+            .await;
+        });
+
+        // The agent trusts the CA, not the server's own certificate.
+        let connector =
+            aether_agent::tls::connector_with_client_cert(&ca_cert, &client_cert, &client_key)
+                .unwrap();
+
+        let info = node("mutual");
+        let node_id = info.id;
+        aether_agent::tls::connect(&addr.to_string(), "localhost", &connector, info, None)
+            .await
+            .unwrap();
+
+        wait_for_registration(&state, node_id).await;
+    }
+
+    #[tokio::test]
+    async fn an_agent_without_a_client_certificate_is_refused() {
+        let (server_tls, ca_cert, _cert, _key) = mutual_tls("refused");
+        let state = MeshState::new();
+        let (listener, addr) = bind("127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let acceptor = aether_controller::tls::acceptor(&server_tls).unwrap();
+
+        tokio::spawn(async move {
+            let _ = aether_controller::serve_tls(listener, state, SecurityConfig::open(), acceptor)
+                .await;
+        });
+
+        // Trusting the CA is not enough when the server wants a certificate back.
+        let _ = &server_tls;
+        let connector = aether_agent::tls::connector(&ca_cert).unwrap();
+        let outcome = aether_agent::tls::connect(
+            &addr.to_string(),
+            "localhost",
+            &connector,
+            node("bare"),
+            None,
+        )
+        .await;
+
+        assert!(outcome.is_err(), "a certificate-less agent was accepted");
+    }
+
     #[tokio::test]
     async fn an_untrusted_certificate_is_rejected() {
         let served = certificate("served");

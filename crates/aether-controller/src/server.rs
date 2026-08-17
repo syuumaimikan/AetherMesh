@@ -76,6 +76,8 @@ where
 
     // Set once the agent registers, so the connection can be detached on close.
     let mut registered_id = None;
+    // Set instead when this connection is one of the node's data channels.
+    let mut channel_for: Option<aether_core::NodeId> = None;
 
     let result = loop {
         let message = match read_message(&mut reader).await {
@@ -131,19 +133,65 @@ where
                 // A reconnecting agent starts with an empty store, so anything
                 // the catalog still credits to it is stale.
                 state.catalog.forget_node(node_id);
-                state.connections.attach(node_id, outbound.clone());
+                let channel_token = state.connections.attach(node_id, outbound.clone());
                 state.metrics.record_registration();
                 registered_id = Some(node_id);
                 info!(%node_id, %hostname, "node registered");
 
                 if outbound
-                    .send(Message::RegisterAccepted { node_id })
+                    .send(Message::RegisterAccepted {
+                        node_id,
+                        channel_token: Some(channel_token),
+                    })
                     .is_err()
                 {
                     break Ok(());
                 }
             }
-            Message::Heartbeat { node_id, metrics } => {
+            Message::RegisterDataChannel {
+                protocol_version,
+                node_id,
+                token,
+            } => {
+                // The channel token is what proves this connection belongs to
+                // the node it names. The mesh token is shared by every agent,
+                // so authorizing on that alone would let any member attach to
+                // any node and be handed that node's data.
+                if protocol_version != PROTOCOL_VERSION
+                    || !state
+                        .connections
+                        .claim_channel_token(node_id, token.as_deref())
+                {
+                    warn!(%node_id, "rejecting data channel");
+                    state.metrics.record_rejection();
+                    break Ok(());
+                }
+
+                state
+                    .connections
+                    .attach_data_channel(node_id, outbound.clone());
+                channel_for = Some(node_id);
+                info!(
+                    %node_id,
+                    channels = state.connections.data_channel_count(node_id),
+                    "data channel attached"
+                );
+            }
+            Message::DataReady { data_id, .. } => {
+                // Identity comes from the connection, never from the body.
+                let Some(node_id) = registered_id.or(channel_for) else {
+                    warn!("data confirmation before registration");
+                    break Ok(());
+                };
+                debug!(%node_id, %data_id, "data assembled on the node");
+                state.connections.complete_data(node_id, data_id);
+            }
+            Message::Heartbeat { metrics, .. } => {
+                let Some(node_id) = registered_id else {
+                    warn!("heartbeat before registration");
+                    break Ok(());
+                };
+
                 let outcome = state
                     .registry
                     .lock()
@@ -157,7 +205,22 @@ where
                     Err(error) => warn!(%error, "dropping heartbeat"),
                 }
             }
+            Message::Pong { nonce } => {
+                if let Some(node_id) = registered_id {
+                    state.connections.complete_pong(node_id, nonce);
+                }
+            }
             Message::TaskCompleted { result } => {
+                // A result is only accepted from the node it claims to be from.
+                let Some(node_id) = registered_id else {
+                    warn!("task result before registration");
+                    break Ok(());
+                };
+                if result.node_id != node_id {
+                    warn!(%node_id, claimed = %result.node_id, "dropping result for another node");
+                    break Ok(());
+                }
+
                 debug!(task_id = %result.task_id, success = result.is_success(), "task result");
                 state.metrics.record_task(result.is_success());
                 state.connections.complete(result);

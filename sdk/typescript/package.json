@@ -1,0 +1,29 @@
+{
+  "name": "@aethermesh/client",
+  "version": "0.1.0",
+  "description": "TypeScript client for AetherMesh: publish data, run WebAssembly tasks across a mesh of machines",
+  "license": "MIT OR Apache-2.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "aethermesh",
+    "distributed",
+    "wasm",
+    "scheduler"
+  ],
+  "scripts": {
+    "example:hash": "node examples/hash.ts",
+    "example:wasm": "node examples/wasm.ts"
+  }
+}

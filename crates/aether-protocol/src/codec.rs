@@ -56,7 +56,10 @@ mod tests {
         let task = Task::new("hash", b"payload".to_vec());
 
         round_trip(Message::register(info));
-        round_trip(Message::RegisterAccepted { node_id });
+        round_trip(Message::RegisterAccepted {
+            node_id,
+            channel_token: None,
+        });
         round_trip(Message::Heartbeat {
             node_id,
             metrics: NodeMetrics::new(0.1, 0.2, 2048),
@@ -75,6 +78,7 @@ mod tests {
     fn trailing_bytes_are_rejected() {
         let mut bytes = encode(&Message::RegisterAccepted {
             node_id: NodeId::generate(),
+            channel_token: None,
         })
         .unwrap();
         bytes.push(0xff);

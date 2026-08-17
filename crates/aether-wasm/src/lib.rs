@@ -20,8 +20,23 @@
 //! returned slice back out of memory. Both halves of the return value are
 //! unsigned; a module that returns a range outside its memory is rejected
 //! rather than trusted.
+//!
+//! # Reading datasets
+//!
+//! A module may also import three functions from `aether` to read the datasets
+//! the task declared as inputs. They are optional: a module that imports none
+//! of them is unaffected, and there is nothing else to import — no files, no
+//! sockets, no clock.
+//!
+//! | Import | Signature | Meaning |
+//! |---|---|---|
+//! | `aether.input_count` | `() -> i32` | how many datasets the task declared |
+//! | `aether.input_len` | `(i32) -> i32` | size of one dataset, `-1` if there is no such input |
+//! | `aether.input_read` | `(i32, i32, i32) -> i32` | copy `(index, ptr, len)` into memory, returns bytes copied or `-1` |
 
 use std::fmt;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 #[cfg(feature = "wasmi-backend")]
 mod wasmi_backend;
@@ -32,6 +47,9 @@ mod wasmtime_backend;
 #[cfg(test)]
 mod testing;
 
+/// Import namespace for the host functions a module may use.
+pub const HOST_MODULE: &str = "aether";
+
 /// Name of the export the host calls.
 pub const RUN_EXPORT: &str = "run";
 /// Name of the allocator export.
@@ -39,8 +57,77 @@ pub const ALLOC_EXPORT: &str = "alloc";
 /// Name of the memory export.
 pub const MEMORY_EXPORT: &str = "memory";
 
+/// Host functions a module is allowed to call, beyond reading its inputs.
+///
+/// Everything here is off by default. A capability is granted by the operator
+/// running the node, not requested by the module: a module that imports
+/// something it was not granted fails to instantiate rather than silently
+/// getting a stub.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct WasmCapabilities {
+    /// `aether.log(ptr, len)` — write a line to the node's log.
+    pub log: bool,
+    /// `aether.now_unix_millis() -> i64` — read the wall clock.
+    ///
+    /// A clock is a side channel as well as a convenience: it lets a module
+    /// tell how long it has been running and behave differently when watched.
+    pub clock: bool,
+    /// `aether.random(ptr, len) -> i32` — fill a buffer with random bytes.
+    ///
+    /// Granting this makes tasks non-deterministic, which means a retry on
+    /// another node can produce a different answer.
+    pub random: bool,
+    /// `aether.file_size(path_ptr, path_len) -> i64` and
+    /// `aether.file_read(path_ptr, path_len, offset, ptr, len) -> i32` — read
+    /// files under one directory, and only under it.
+    ///
+    /// This is the one capability that reaches outside the process. Every path
+    /// is resolved and then checked to be inside the root, so `..`, absolute
+    /// paths, and symlinks pointing elsewhere are all refused. Reads only:
+    /// there is no write, no create, no list, and no delete.
+    pub read_dir: Option<PathBuf>,
+}
+
+impl WasmCapabilities {
+    /// Nothing but the task's own inputs. The default.
+    pub fn none() -> Self {
+        Self::default()
+    }
+
+    /// Everything except filesystem access, which needs a root to allow.
+    pub fn all() -> Self {
+        Self {
+            log: true,
+            clock: true,
+            random: true,
+            read_dir: None,
+        }
+    }
+
+    /// Allows reading files under `root`, and nowhere else.
+    pub fn with_read_dir(mut self, root: impl Into<PathBuf>) -> Self {
+        self.read_dir = Some(root.into());
+        self
+    }
+
+    pub fn with_log(mut self, enabled: bool) -> Self {
+        self.log = enabled;
+        self
+    }
+
+    pub fn with_clock(mut self, enabled: bool) -> Self {
+        self.clock = enabled;
+        self
+    }
+
+    pub fn with_random(mut self, enabled: bool) -> Self {
+        self.random = enabled;
+        self
+    }
+}
+
 /// What a module is allowed to consume.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WasmLimits {
     /// Fuel, roughly one unit per executed instruction. Bounds run time even
     /// for a module that loops forever.
@@ -49,6 +136,8 @@ pub struct WasmLimits {
     pub memory_bytes: usize,
     /// Largest output the host will copy back.
     pub max_output_bytes: usize,
+    /// Host functions this module may call.
+    pub capabilities: WasmCapabilities,
 }
 
 impl Default for WasmLimits {
@@ -57,7 +146,16 @@ impl Default for WasmLimits {
             fuel: 100_000_000,
             memory_bytes: 64 * 1024 * 1024,
             max_output_bytes: 64 * 1024 * 1024,
+            capabilities: WasmCapabilities::none(),
         }
+    }
+}
+
+impl WasmLimits {
+    /// Grants host functions to a module.
+    pub fn with_capabilities(mut self, capabilities: WasmCapabilities) -> Self {
+        self.capabilities = capabilities;
+        self
     }
 }
 
@@ -128,19 +226,215 @@ pub const fn backend() -> Backend {
 
 /// Runs `module` over `input` and returns what it wrote.
 pub fn run(module: &[u8], input: &[u8], limits: &WasmLimits) -> Result<Vec<u8>, WasmError> {
+    run_with_inputs(module, input, &[], limits)
+}
+
+/// Same, with datasets the module can read through the `aether` imports.
+///
+/// `inputs` are the task's declared datasets, in the order the task listed
+/// them. They are shared, not copied: nothing enters the module's memory
+/// unless the module asks for it.
+pub fn run_with_inputs(
+    module: &[u8],
+    input: &[u8],
+    inputs: &[Arc<[u8]>],
+    limits: &WasmLimits,
+) -> Result<Vec<u8>, WasmError> {
     #[cfg(feature = "wasmi-backend")]
     {
-        wasmi_backend::run(module, input, limits)
+        wasmi_backend::run(module, input, inputs, limits)
     }
     #[cfg(all(feature = "wasmtime-backend", not(feature = "wasmi-backend")))]
     {
-        wasmtime_backend::run(module, input, limits)
+        wasmtime_backend::run(module, input, inputs, limits)
     }
     #[cfg(not(any(feature = "wasmi-backend", feature = "wasmtime-backend")))]
     {
-        let _ = (module, input, limits);
+        let _ = (module, input, inputs, limits);
         Err(WasmError::NoBackend)
     }
+}
+
+/// Copies part of a dataset into a module's memory.
+///
+/// Shared by the backends: bounds are checked against both the dataset and the
+/// module's memory, and a request that does not fit answers `-1` instead of
+/// trapping, so a module can probe sizes without dying.
+pub(crate) fn read_input(
+    inputs: &[Arc<[u8]>],
+    index: i32,
+    len: i32,
+    memory: &mut [u8],
+    ptr: i32,
+) -> i32 {
+    let (Ok(index), Ok(len), Ok(ptr)) = (
+        usize::try_from(index),
+        usize::try_from(len),
+        usize::try_from(ptr),
+    ) else {
+        return -1;
+    };
+
+    let Some(data) = inputs.get(index) else {
+        return -1;
+    };
+    let len = len.min(data.len());
+    let Some(target) = memory.get_mut(ptr..ptr + len) else {
+        return -1;
+    };
+
+    target.copy_from_slice(&data[..len]);
+    len as i32
+}
+
+/// Reads a UTF-8 string out of a module's memory, for the `log` capability.
+///
+/// Invalid bytes are replaced rather than rejected: a module logging garbage is
+/// a bug in the module, not a reason to kill the task.
+pub(crate) fn read_text(memory: &[u8], ptr: i32, len: i32) -> Option<String> {
+    let (Ok(ptr), Ok(len)) = (usize::try_from(ptr), usize::try_from(len)) else {
+        return None;
+    };
+    let slice = memory.get(ptr..ptr.checked_add(len)?)?;
+    Some(String::from_utf8_lossy(slice).into_owned())
+}
+
+/// Milliseconds since the Unix epoch, for the `clock` capability.
+pub(crate) fn now_unix_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// Fills a module's buffer with random bytes, for the `random` capability.
+///
+/// Returns the number of bytes written, or `-1` if the range is not inside the
+/// module's memory.
+pub(crate) fn fill_random(memory: &mut [u8], ptr: i32, len: i32) -> i32 {
+    let (Ok(ptr), Ok(len)) = (usize::try_from(ptr), usize::try_from(len)) else {
+        return -1;
+    };
+    let Some(target) = memory.get_mut(ptr..ptr.saturating_add(len)) else {
+        return -1;
+    };
+
+    // A hash of fresh entropy, stretched: no RNG dependency for a capability
+    // most tasks will never ask for.
+    let mut seed = blake3_seed();
+    for chunk in target.chunks_mut(8) {
+        seed = seed
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        let bytes = seed.to_le_bytes();
+        chunk.copy_from_slice(&bytes[..chunk.len()]);
+    }
+    len as i32
+}
+
+/// Entropy for [`fill_random`]: the clock mixed with an address and a counter.
+fn blake3_seed() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos() as u64)
+        .unwrap_or(0);
+    let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let address = &counter as *const u64 as u64;
+
+    nanos ^ counter.rotate_left(17) ^ address.rotate_left(33)
+}
+
+/// Resolves a module-supplied path inside the granted root.
+///
+/// Returns `None` unless the resolved path really is under the root: `..`, an
+/// absolute path, and a symlink pointing outside all fail here rather than at
+/// the point of reading.
+pub(crate) fn resolve_in_root(root: &Path, requested: &str) -> Option<PathBuf> {
+    // A path the module supplies is never trusted as absolute.
+    let relative = Path::new(requested);
+    if relative.is_absolute() || requested.contains('\0') {
+        return None;
+    }
+
+    let candidate = root.join(relative);
+    // Canonicalising both sides is what makes symlinks and `..` harmless: the
+    // comparison happens on the real location, not the spelling.
+    let real_root = std::fs::canonicalize(root).ok()?;
+    let real_path = std::fs::canonicalize(&candidate).ok()?;
+
+    real_path.starts_with(&real_root).then_some(real_path)
+}
+
+/// Size of a file inside the granted root, or `-1`.
+pub(crate) fn file_size(root: Option<&Path>, requested: &str) -> i64 {
+    let Some(root) = root else { return -1 };
+    let Some(path) = resolve_in_root(root, requested) else {
+        return -1;
+    };
+
+    std::fs::metadata(&path)
+        .ok()
+        .filter(|metadata| metadata.is_file())
+        .and_then(|metadata| i64::try_from(metadata.len()).ok())
+        .unwrap_or(-1)
+}
+
+/// Copies part of a file inside the granted root into a module's memory.
+///
+/// Returns the number of bytes read, or `-1` for anything refused.
+pub(crate) fn file_read(
+    root: Option<&Path>,
+    requested: &str,
+    offset: i64,
+    memory: &mut [u8],
+    ptr: i32,
+    len: i32,
+) -> i32 {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let Some(root) = root else { return -1 };
+    let Some(path) = resolve_in_root(root, requested) else {
+        return -1;
+    };
+    let (Ok(ptr), Ok(len), Ok(offset)) = (
+        usize::try_from(ptr),
+        usize::try_from(len),
+        u64::try_from(offset),
+    ) else {
+        return -1;
+    };
+
+    let Some(target) = memory.get_mut(ptr..ptr.saturating_add(len)) else {
+        return -1;
+    };
+    let Ok(mut file) = std::fs::File::open(&path) else {
+        return -1;
+    };
+    if file.seek(SeekFrom::Start(offset)).is_err() {
+        return -1;
+    }
+
+    let mut written = 0usize;
+    while written < len {
+        match file.read(&mut target[written..]) {
+            Ok(0) => break,
+            Ok(count) => written += count,
+            Err(_) => return -1,
+        }
+    }
+    written as i32
+}
+
+/// Size of one declared dataset, or `-1` when there is no such input.
+pub(crate) fn input_len(inputs: &[Arc<[u8]>], index: i32) -> i32 {
+    usize::try_from(index)
+        .ok()
+        .and_then(|index| inputs.get(index))
+        .and_then(|data| i32::try_from(data.len()).ok())
+        .unwrap_or(-1)
 }
 
 /// Splits a packed `ptr << 32 | len` return value.
