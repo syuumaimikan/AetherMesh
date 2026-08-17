@@ -72,6 +72,7 @@ dependencies = [
 name = "aether-controller"
 version = "0.1.0"
 dependencies = [
+ "aether-agent",
  "aether-core",
  "aether-protocol",
  "aether-scheduler",

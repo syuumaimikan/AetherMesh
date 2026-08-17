@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AetherMesh · web example</title>
+<style>
+  :root {
+    --blue: #1a73e8;
+    --green: #188038;
+    --surface: #ffffff;
+    --bg: #f8f9fa;
+    --text: #202124;
+    --muted: #5f6368;
+    --line: #dadce0;
+    --radius: 12px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --surface: #202124; --bg: #17181a; --text: #e8eaed;
+      --muted: #9aa0a6; --line: #3c4043; --blue: #8ab4f8; --green: #81c995;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 32px 20px 64px;
+    font: 400 16px/1.6 "Google Sans", Roboto, "Segoe UI", system-ui, sans-serif;
+    background: var(--bg); color: var(--text);
+  }
+  main { max-width: 720px; margin: 0 auto; }
+  h1 { font-size: 28px; font-weight: 500; margin: 0 0 4px; letter-spacing: -0.2px; }
+  p.lede { color: var(--muted); margin: 0 0 28px; }
+  .card {
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: var(--radius); padding: 20px; margin-bottom: 16px;
+  }
+  .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  button {
+    font: inherit; font-weight: 500; color: #fff; background: var(--blue);
+    border: 0; border-radius: 999px; padding: 10px 22px; cursor: pointer;
+  }
+  button:disabled { opacity: .5; cursor: default; }
+  button.secondary { background: transparent; color: var(--blue); border: 1px solid var(--line); }
+  input[type=file] { font: inherit; color: var(--muted); }
+  dl { display: grid; grid-template-columns: 140px 1fr; gap: 8px 16px; margin: 16px 0 0; }
+  dt { color: var(--muted); font-size: 14px; }
+  dd { margin: 0; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+  code, .mono { font-family: "Roboto Mono", ui-monospace, SFMono-Regular, monospace; font-size: 14px; }
+  .nodes { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+  .chip {
+    border: 1px solid var(--line); border-radius: 999px; padding: 6px 14px;
+    font-size: 14px; display: flex; gap: 8px; align-items: center;
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); }
+  .hint { color: var(--muted); font-size: 14px; margin-top: 12px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Hash a file on the mesh</h1>
+  <p class="lede">The browser uploads bytes to a small bridge; the bridge publishes them
+    once and asks the mesh to hash them. The digest comes back from whichever node ran it.</p>
+
+  <div class="card">
+    <div class="row">
+      <input type="file" id="file">
+      <button id="run" disabled>Hash it</button>
+      <button class="secondary" id="again" hidden>Hash again</button>
+    </div>
+    <dl id="result" hidden>
+      <dt>digest</dt><dd class="mono" id="digest"></dd>
+      <dt>published as</dt><dd class="mono" id="dataId"></dd>
+      <dt>size</dt><dd id="size"></dd>
+      <dt>ran on node</dt><dd class="mono" id="node"></dd>
+      <dt>task time</dt><dd id="taskMs"></dd>
+      <dt>round trip</dt><dd id="totalMs"></dd>
+    </dl>
+    <p class="hint" id="secondRun" hidden>
+      Hash the same file again: the data is already on that node, so nothing moves and
+      the round trip drops.
+    </p>
+  </div>
+
+  <div class="card">
+    <strong style="font-weight:500">Mesh</strong>
+    <div class="nodes" id="nodes"></div>
+  </div>
+</main>
+
+<script type="module">
+const $ = (id) => document.getElementById(id);
+const file = $("file"), run = $("run"), again = $("again");
+
+async function refreshNodes() {
+  try {
+    const { nodes } = await (await fetch("/api/nodes")).json();
+    $("nodes").innerHTML = nodes.length
+      ? nodes.map((node) => `
+          <span class="chip"><span class="dot"></span>${node.hostname}
+          · ${node.cpuCores} cores · cpu ${(node.cpuUsage * 100).toFixed(0)}%</span>`).join("")
+      : `<span class="chip">no nodes — start an agent</span>`;
+  } catch {
+    $("nodes").innerHTML = `<span class="chip">bridge unreachable</span>`;
+  }
+}
+
+async function hash() {
+  const chosen = file.files?.[0];
+  if (!chosen) return;
+
+  run.disabled = again.disabled = true;
+  run.textContent = "Hashing…";
+  try {
+    const response = await fetch("/api/hash", { method: "POST", body: chosen });
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.error ?? "task failed");
+
+    $("digest").textContent = body.digest;
+    $("dataId").textContent = body.dataId.slice(0, 32) + "…";
+    $("size").textContent = `${body.sizeBytes.toLocaleString()} bytes`;
+    $("node").textContent = body.nodeId.slice(0, 8);
+    $("taskMs").textContent = `${body.taskMs.toFixed(2)} ms`;
+    $("totalMs").textContent = `${body.totalMs.toFixed(0)} ms`;
+    $("result").hidden = false;
+    $("secondRun").hidden = false;
+    again.hidden = false;
+  } catch (error) {
+    alert(error.message);
+  } finally {
+    run.disabled = again.disabled = false;
+    run.textContent = "Hash it";
+  }
+}
+
+file.addEventListener("change", () => { run.disabled = !file.files?.length; });
+run.addEventListener("click", hash);
+again.addEventListener("click", hash);
+
+refreshNodes();
+setInterval(refreshNodes, 3000);
+</script>
+</body>
+</html>

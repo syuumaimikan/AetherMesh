@@ -80,7 +80,7 @@ pub fn run(
             .func_wrap(
                 HOST_MODULE,
                 "log",
-                |mut caller: Caller<HostState>, ptr: i32, len: i32| {
+                |caller: Caller<HostState>, ptr: i32, len: i32| {
                     let Some(memory) = caller
                         .get_export(MEMORY_EXPORT)
                         .and_then(|e| e.into_memory())
@@ -122,7 +122,7 @@ pub fn run(
             .func_wrap(
                 HOST_MODULE,
                 "file_size",
-                |mut caller: Caller<HostState>, path_ptr: i32, path_len: i32| -> i64 {
+                |caller: Caller<HostState>, path_ptr: i32, path_len: i32| -> i64 {
                     let Some(memory) = caller
                         .get_export(MEMORY_EXPORT)
                         .and_then(|e| e.into_memory())

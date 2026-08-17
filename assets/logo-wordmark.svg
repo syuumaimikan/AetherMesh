@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 160" role="img" aria-label="AetherMesh">
+  <title>AetherMesh</title>
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#4285F4"/>
+      <stop offset="1" stop-color="#0F9D58"/>
+    </linearGradient>
+  </defs>
+
+  <g transform="translate(8 16) scale(0.25)">
+    <rect width="512" height="512" rx="112" fill="url(#sky)"/>
+    <g stroke="#FFFFFF" stroke-width="14" stroke-linecap="round" fill="none" stroke-opacity=".9">
+      <path d="M256 152 L136 300"/>
+      <path d="M256 152 L376 300"/>
+      <path d="M136 300 L256 396"/>
+      <path d="M376 300 L256 396"/>
+    </g>
+    <g fill="#FFFFFF">
+      <circle cx="256" cy="152" r="34"/>
+      <circle cx="136" cy="300" r="26"/>
+      <circle cx="376" cy="300" r="26"/>
+      <circle cx="256" cy="396" r="26"/>
+    </g>
+    <circle cx="316" cy="226" r="13" fill="#FBBC05"/>
+  </g>
+
+  <text x="160" y="94"
+        font-family="Google Sans, Roboto, Segoe UI, Helvetica, Arial, sans-serif"
+        font-size="60" font-weight="500" fill="currentColor">
+    Aether<tspan font-weight="700">Mesh</tspan>
+  </text>
+  <text x="162" y="126"
+        font-family="Roboto, Segoe UI, Helvetica, Arial, sans-serif"
+        font-size="20" fill="currentColor" opacity=".7">
+    move the compute, not the data
+  </text>
+</svg>
