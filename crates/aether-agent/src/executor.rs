@@ -1,4 +1,4 @@
-﻿//! Runs built-in tasks. No task ever carries executable code.
+//! Runs built-in tasks. No task ever carries executable code.
 
 use std::time::Instant;
 
@@ -105,10 +105,10 @@ fn wasm_capabilities() -> aether_wasm::WasmCapabilities {
         .with_clock(enabled("AETHERMESH_WASM_CLOCK"))
         .with_random(enabled("AETHERMESH_WASM_RANDOM"));
 
-    if let Ok(directory) = std::env::var("AETHERMESH_WASM_READ_DIR") {
-        if !directory.is_empty() {
-            capabilities = capabilities.with_read_dir(directory);
-        }
+    if let Ok(directory) = std::env::var("AETHERMESH_WASM_READ_DIR")
+        && !directory.is_empty()
+    {
+        capabilities = capabilities.with_read_dir(directory);
     }
     capabilities
 }

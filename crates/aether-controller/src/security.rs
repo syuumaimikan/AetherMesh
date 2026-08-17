@@ -67,10 +67,10 @@ impl SecurityConfig {
         };
 
         let mut matched: Option<Option<&str>> = None;
-        if let Some(shared) = self.auth_token.as_deref() {
-            if constant_time_eq(shared.as_bytes(), presented.as_bytes()) {
-                matched = Some(None);
-            }
+        if let Some(shared) = self.auth_token.as_deref()
+            && constant_time_eq(shared.as_bytes(), presented.as_bytes())
+        {
+            matched = Some(None);
         }
         for (label, token) in &self.node_tokens {
             if constant_time_eq(token.as_bytes(), presented.as_bytes()) {

@@ -1,0 +1,96 @@
+# Every push and pull request, on the three platforms people actually run this
+# on, plus the cross-compile that matters most (Raspberry Pi).
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  # Keep CI caches and artifacts small; nothing here is debugged interactively.
+  CARGO_PROFILE_TEST_DEBUG: line-tables-only
+
+jobs:
+  test:
+    name: test · ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Default features
+        run: cargo test --workspace
+
+      - name: TLS and cloud adapters
+        run: cargo test --workspace --features aether-controller/tls,aether-agent/tls,aether-cloud/cloud-http
+
+      - name: WebAssembly JIT backend
+        run: cargo test -p aether-wasm --no-default-features --features wasmtime-backend
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  # An agent is often a Raspberry Pi, so the build that matters is the one
+  # nobody runs locally.
+  cross:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target: [aarch64-unknown-linux-gnu, armv7-unknown-linux-gnueabihf]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install cross --locked
+      - run: cross build --release -p aether-agent --target ${{ matrix.target }}
+
+  sdks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: TypeScript SDK parses and type-strips
+        run: node --experimental-strip-types --check sdk/typescript/src/index.ts
+
+      - name: Go SDK vets and builds
+        working-directory: sdk/go
+        run: |
+          go vet ./...
+          go build ./...
+
+      - name: Python SDK imports
+        run: python -c "import sys; sys.path.insert(0, 'sdk/python'); import aethermesh; print(aethermesh.AetherMesh)"

@@ -79,7 +79,7 @@ impl ProcessProvider {
 impl Drop for Inner {
     fn drop(&mut self) {
         // A provider going away should not leave orphaned agents behind.
-        for (_, child) in self.processes.iter_mut() {
+        for child in self.processes.values_mut() {
             let _ = child.kill();
         }
     }

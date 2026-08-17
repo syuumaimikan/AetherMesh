@@ -151,8 +151,10 @@ mod tests {
 
     #[test]
     fn the_server_name_defaults_to_the_controller_host() {
-        let mut config = AgentConfig::default();
-        config.controller = "mesh.example.com:7000".to_string();
+        let mut config = AgentConfig {
+            controller: "mesh.example.com:7000".to_string(),
+            ..AgentConfig::default()
+        };
         assert_eq!(config.server_name(), "mesh.example.com");
 
         config.tls_server_name = Some("other.example.com".to_string());

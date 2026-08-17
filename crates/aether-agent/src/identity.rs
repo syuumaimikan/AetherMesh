@@ -24,10 +24,10 @@ pub fn default_identity_path() -> PathBuf {
 /// A file that does not contain a valid id is replaced rather than fatal: a
 /// truncated write should not keep a node out of the mesh forever.
 pub fn load_or_create(path: &Path) -> std::io::Result<NodeId> {
-    if let Ok(contents) = std::fs::read_to_string(path) {
-        if let Ok(node_id) = contents.trim().parse::<NodeId>() {
-            return Ok(node_id);
-        }
+    if let Ok(contents) = std::fs::read_to_string(path)
+        && let Ok(node_id) = contents.trim().parse::<NodeId>()
+    {
+        return Ok(node_id);
     }
 
     let node_id = NodeId::generate();

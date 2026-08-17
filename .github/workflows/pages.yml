@@ -1,0 +1,52 @@
+# Publishes docs/ to GitHub Pages.
+#
+# Enable it once in Settings → Pages → Source → GitHub Actions; after that
+# every push to main updates the site.
+name: pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "assets/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deployment at a time; a queued run replaces an older one rather than
+# racing it.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # The site links to ../assets, so both directories ship together.
+      - name: Assemble the site
+        run: |
+          mkdir -p _site
+          cp -r docs/* _site/
+          mkdir -p _site/assets
+          cp -r assets/* _site/assets/
+          # index.html reaches assets with ../assets; at the site root that is
+          # one level too high.
+          sed -i 's|\.\./assets/|assets/|g' _site/index.html
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - id: deployment
+        uses: actions/deploy-pages@v4

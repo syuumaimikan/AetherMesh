@@ -96,7 +96,7 @@ pub fn run(
     }
     if limits.capabilities.clock {
         linker
-            .func_wrap(HOST_MODULE, "now_unix_millis", || now_unix_millis())
+            .func_wrap(HOST_MODULE, "now_unix_millis", now_unix_millis)
             .map_err(|error| WasmError::Instantiate(error.to_string()))?;
     }
     if limits.capabilities.random {
