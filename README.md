@@ -108,16 +108,17 @@ The module is published like any dataset, so a 5 MB module reaches each node onc
 
 ## Project status
 
-**Alpha — everything on the roadmap is implemented, covered by 256 tests, and not yet battle-tested.**
+**Alpha — everything on the roadmap is implemented, covered by 323 tests, and not yet battle-tested.**
 
-Working today: core types, wire protocol, node registry, metrics collection, three schedulers, TCP transport with TLS and optional mutual TLS on both listeners, shared and per-node tokens, persistent node identity, built-in and WebAssembly task execution with opt-in host capabilities, content-addressed and chunked transfer with dedup, transfer across several parallel connections, adaptive compression, retries and heartbeat eviction, measured latency and bandwidth feeding the scheduler, a JSON client API with TypeScript, Python, and Go SDKs, TOML configuration, counters and structured logs, cloud adapters for Kubernetes, AWS, GCP, Azure and local processes, and benchmarks against both a naive baseline and Dask.
+Working today: core types, wire protocol, node registry, metrics collection, three schedulers, label-based placement constraints, TCP transport with TLS and optional mutual TLS on both listeners, shared and per-node tokens, persistent node identity, built-in and WebAssembly task execution with opt-in host capabilities, content-addressed and chunked transfer with dedup, transfer across several parallel connections, adaptive compression, a bounded LRU data cache on each agent, a result cache on the controller, retries and heartbeat eviction, idle heartbeat backoff, measured latency and bandwidth feeding the scheduler, a JSON client API with TypeScript, Python, Go, Java, and C# SDKs, a Prometheus endpoint, TOML configuration, structured logs, cloud adapters for Kubernetes, AWS, GCP, Azure and local processes, and benchmarks against both a naive baseline and Dask.
 
 Honest limits — what is implemented but not proven, rather than missing:
 
 - **The cloud adapters are tested against their HTTP contract, not against the real clouds.** Each one is exercised with a stub server that checks the request it sends and the response it parses; nobody has run them against a live AWS or GKE account from this repository. Expect to hit the details a real account teaches you.
 - **WASM capabilities are off by default.** A module can read the datasets the task declared; a clock, randomness, and logging are grants an operator makes deliberately. There is still no filesystem and no network, and there is not going to be.
 - **Percentile numbers come from loopback.** The Dask comparison and the internal benchmark both run on one machine.
-- **No formal security review.** Mutual TLS, constant-time token comparison, and a sandbox with no host access are the design; a review is not the same as a design.
+- **Nothing verifies a label.** An agent claiming `gpu=true` on a machine without one will be sent GPU work and will fail it. Labels route work; they do not audit hardware.
+- **No formal security review.** Mutual TLS, constant-time token comparison, and a sandbox with no host access are the design; a review is not the same as a design. An internal pass found and fixed three real issues — data-channel hijacking, heartbeat spoofing, and a non-cryptographic `random` — which is a reason to expect a fourth, not to assume there is none.
 
 ---
 
@@ -403,32 +404,27 @@ println!("{:?} in {:?}", result.output(), result.duration);
 
 ## Roadmap
 
-Every development phase is complete:
+Built and tested:
 
-- [x] 1–5 Workspace, core types, protocol, node registry, agent metrics
-- [x] 6–7 Scheduler MVP, dispatch simulation
-- [x] 8–9 Real network (TCP + length-prefixed frames), remote task execution
-- [x] 10 Benchmark MVP
-- [x] 11–13 Data locality, content-addressed transfer, chunk transfer
-- [x] 14–15 Adaptive compression, weighted scheduler
-- [x] 16 Baseline comparison: traffic reduction, speedup, percentiles
-- [x] 17 Failure recovery: heartbeat eviction, task retry
-- [x] 18 Multi-node environment: 3 agents over real TCP, deployment guide
-- [x] 19 `CloudProvider` seam: discover resources, deploy workers, read metrics
-- [x] 20 Production architecture: TLS, token auth, node identity, config, metrics
-- [x] 21 Multi-language: WebAssembly tasks, JSON client API, TypeScript SDK
-- [x] 22 Python and Go SDKs, dataset imports for WASM tasks, measured latency and
-      bandwidth, per-node tokens, TLS on the client API, pipelined chunk sends,
-      a provider that really deploys agents, and a comparison benchmark vs Dask
-- [x] 23 Cloud adapters (Kubernetes, AWS EC2, GCP Compute, Azure VMs), parallel
-      chunk transfer over several connections, mutual TLS, opt-in WASM host
-      capabilities, and a compile- and run-verified Go SDK
+| Area | What is there |
+|---|---|
+| **Placement** | Least-loaded, data-locality, and scored schedulers; label constraints; measured latency and bandwidth |
+| **Data movement** | BLAKE3 content addressing, chunk-level dedup, adaptive LZ4, transfer across several connections |
+| **Caching** | Bounded LRU store on each agent with eviction reported to the controller; result cache keyed by work identity |
+| **Isolation** | WebAssembly on wasmi or wasmtime, fuel and memory limits, capabilities off by default |
+| **Failure** | Heartbeat eviction, retry onto another node, dead sockets skipped at selection |
+| **Security** | TLS and mutual TLS on both listeners, shared and per-node tokens, per-registration data-channel tokens, constant-time comparison |
+| **Operating it** | TOML config, structured logs, Prometheus `/metrics`, idle heartbeat backoff, 1.3 MB and 2.7 MB binaries |
+| **Reaching it** | JSON client API with TypeScript, Python, Go, Java, and C# SDKs, plus a `concurrent.futures` pool for Python |
+| **Provisioning** | Kubernetes, AWS EC2, GCP Compute, Azure VMs, local processes |
 
 What comes next, and where help is most welcome:
 
+- [ ] **Running any of this on real hardware over a real network.** This is the weakest claim in the repository — every number here comes from loopback.
 - [ ] Running the cloud adapters against real accounts and fixing what that teaches
+- [ ] A security review of the sandbox and the credential paths by someone who did not write them
+- [ ] Task priorities and queueing; placement is first-come, first-served today
 - [ ] QUIC transport — the framing layer is already transport-independent
-- [ ] A security review of the sandbox and the credential paths
 - [ ] Scheduling across regions with cost as a term in the score
 
 ---
@@ -441,9 +437,9 @@ Correctness → Simplicity → Performance → Extensibility
 
 - `#![forbid(unsafe_code)]` across the workspace.
 - No `unwrap()` outside tests; every failure is a `thiserror` type.
-- Dependencies arrive when a phase needs them, never before. The whole tree: tokio, serde, bincode, blake3, lz4_flex, sysinfo, clap, tracing, toml, base64, wasmi — plus rustls only if you enable `tls`, and wasmtime only if you ask for the JIT.
+- A dependency arrives when something needs it, never before. The whole tree: tokio, serde, bincode, blake3, lz4_flex, sysinfo, clap, tracing, toml, base64, getrandom, wasmi — plus rustls only if you enable `tls`, and wasmtime only if you ask for the JIT.
 - Pure-Rust crypto and compression, so a Raspberry Pi cross-build needs no C toolchain.
-- Every phase ends green: `cargo fmt --check`, `cargo check`, `cargo test`.
+- `main` stays green: `cargo fmt --check`, `clippy -D warnings`, and the full test suite on Linux, Windows, and macOS.
 
 ```bash
 cargo test --workspace

@@ -1,37 +1,50 @@
-phase=23
+# Working notes for whoever picks this up next. Not documentation — the READMEs
+# and docs/ are. This is the stuff that would otherwise have to be rediscovered.
 
-completed:
-- phases 1-22 (see README roadmap)
-- phase 23: the five remaining gaps, all implemented and tested
-  - aether-cloud cloud-http feature: KubernetesProvider (in-cluster service
-    account), AwsProvider (EC2 query API + own SigV4), GcpProvider (Compute +
-    metadata token), AzureProvider (management API + IMDS token)
-    tested against a hand-written MockServer: request shape + response parsing
-  - parallel chunk transfer: Message::RegisterDataChannel / DataReady,
-    Connections::send_bulk round-robins over the node's extra connections,
-    NetworkTransport waits for DataReady before the task is dispatched
-    agent: AgentClient::open_data_channels, shared Arc<Mutex<ChunkAssembler>>
-    CLI/config: --data-channels / data_channels
-  - mutual TLS: TlsConfig::with_client_ca + WebPkiClientVerifier,
-    generate_ca_and_cert / issue_client_cert, agent
-    connector_with_client_cert, CLI: generate-cert --with-ca,
-    issue-client-cert, --tls-client-cert/--tls-client-key,
-    config: tls_client_ca_path
-  - WASM capabilities: WasmCapabilities { log, clock, random }, off by default;
-    a module importing something not granted fails to instantiate
-  - Go SDK: verified with go1.24 (vet + build clean) and run end to end
-    against a live mesh; examples/hash added
+test counts: 270 default / 323 with tls + cloud-http
 
-test counts: 212 default / 256 with tls + cloud-http
+## Verified by actually running it, not just by tests
 
-notes:
-- reqwest 0.12 (rustls-tls), hmac 0.12, sha2 0.10 - newer majors changed APIs
+- three labelled agents + controller on this machine; examples/09 output in its
+  README is real, including the refusal when nothing satisfies the constraints
+- examples/10 (MeshExecutor) numbers are real, including the half where the mesh
+  loses to a thread pool
+- Java and C# SDKs compiled and run against a live mesh; their README output is
+  what they printed
+- /metrics and /healthz scraped from a running controller
+- both sample TOML files loaded by the real binaries
+
+## Things that cost time to find out
+
+- reqwest 0.12 (rustls-tls), hmac 0.12, sha2 0.10 — newer majors changed APIs
 - rcgen needs the x509-parser feature to sign with an existing CA
+- bincode 2 renamed DeserializeError to DecodeError
+- wasmtime's Store<T> requires 'static, so WASM inputs are Arc<[u8]> not &[u8]
+- tokio's BufReader has no by_ref(); cap the reader with .take() instead
+- PowerShell's Get-Content -Raw / -replace mangles UTF-8 em-dashes and can eat
+  newlines. Use python or the Edit tool for source files.
+- sysinfo's first CPU sample after construction is arbitrary, not 0.0 — on
+  Windows it reports 100%. local_node_info sleeps one interval before sampling.
+- cargo test -p aether-agent --all-features fails: it enables the agent's tls
+  feature but not the controller's. Test the workspace, not the crate.
 - Go toolchain lives in the scratchpad (not committed): go1.24.0 windows-amd64
+
+## Deliberate design decisions worth not re-litigating
+
+- the telemetry endpoint reports aggregates only; a per-node label would make an
+  unauthenticated port into an inventory of the network (test pins this)
+- a blob larger than the whole storage budget is stored anyway — refusing it
+  would fail work the mesh already decided to run here
+- heartbeat backoff is capped by the controller's declared eviction window, not
+  by anything the agent chooses; an agent told nothing does not back off at all
+- MeshExecutor refuses Python callables rather than running them locally
 - cloud adapters read platform liveness only; utilisation comes from heartbeats
 
-open work:
+## Open work
+
+- run any of this on real hardware over a real network (weakest claim here)
 - run the cloud adapters against real accounts
+- security review by someone who did not write it
+- task priorities and queueing; placement is first-come, first-served
 - QUIC transport
-- security review
 - cost-aware cross-region scheduling
