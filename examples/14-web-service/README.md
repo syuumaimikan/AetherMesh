@@ -26,6 +26,70 @@ Then open <http://127.0.0.1:8081>, or use the endpoints directly:
 | `POST /api/hash` | hash an upload |
 | `POST /api/work?iterations=…&batch=1` | CPU work, at interactive or batch priority |
 
+## Where does what I sent get received?
+
+Press **Run CPU work** and the page answers exactly that. Four hops, and the
+last one is the machine your work actually ran on:
+
+```
+RESULT
+2.84 ms of work, output 80a9a14fafed71a9
+
+WHERE IT WAS RECEIVED
+┌ browser     your machine
+│               picked the data
+│ bridge      syuum:8081 (this node process, pid 20556)
+│               held the mesh connection, 4.2 ms round trip
+│ controller  127.0.0.1:7100
+│               chose the node and moved the data if it had to
+└ agent       syuum (127.0.0.1:7001)
+                ran it in 2.84 ms — this is where your work executed
+```
+
+Nothing in that list is guessed. The node id comes back with the result, and
+the bridge turns it into a hostname by asking the mesh who that is.
+
+| hop | what it is | what it receives |
+|---|---|---|
+| **browser** | your page | nothing — it only sends |
+| **bridge** | `server.mjs`, this Node process | the HTTP request and the uploaded bytes |
+| **controller** | `aether-controller`, client API on 7100 | the task and its inputs, over length-prefixed JSON |
+| **agent** | `aether-agent` on some machine | the task itself, over the bincode protocol — **and this is where it runs** |
+
+The browser never talks to the controller and never talks to an agent. It
+cannot: a page has no raw TCP. It talks to the bridge, which is also where
+your mesh token lives and where the task kinds are fixed — the page chooses
+data, never code.
+
+### Watching it arrive from the other side
+
+The same task, asked for from the mesh rather than from the page:
+
+```bash
+curl -s http://127.0.0.1:8081/api/recent
+```
+
+```
+cpu    2.84 ms on 72e01f11 19s ago  output='...O..q.'
+```
+
+And in the terminal dashboard, which is watching the whole mesh and knows
+nothing about this web service:
+
+```
+┌ Recent tasks (mesh) ──────────────────────────────────────────────────┐
+│✓ cpu            2.8 ms 72e01f11  23s    ...O..q.                      │
+└───────────────────────────────────────────────────────────────────────┘
+```
+
+Same node id, same duration, same output. That is the loop closed: submitted
+from a browser, executed on an agent, and visible from anywhere that can reach
+the mesh.
+
+The output shows as dots there because it is binary — the `cpu` task returns
+eight bytes of accumulator, and previews replace anything unprintable. The page
+shows the same bytes as hex: `80a9a14fafed71a9`.
+
 ## One connection is one queue
 
 The client protocol matches replies to requests **in order** on a connection.

@@ -21,21 +21,70 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
+import { hostname } from "node:os";
+
 import { MeshPool } from "./pool.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT ?? 8081);
 const POOL_SIZE = Number(process.env.POOL_SIZE ?? 8);
+const MESH_HOST = process.env.AETHERMESH_HOST ?? "127.0.0.1";
+const MESH_PORT = Number(process.env.AETHERMESH_PORT ?? 7100);
 
 const pool = await MeshPool.connect(
-  {
-    host: process.env.AETHERMESH_HOST ?? "127.0.0.1",
-    port: Number(process.env.AETHERMESH_PORT ?? 7100),
-    token: process.env.AETHERMESH_TOKEN,
-  },
+  { host: MESH_HOST, port: MESH_PORT, token: process.env.AETHERMESH_TOKEN },
   POOL_SIZE,
 );
 console.log(`pool of ${pool.size} connections ready on port ${PORT}`);
+
+/**
+ * Which machine a node id belongs to.
+ *
+ * The mesh answers in node ids, which are stable and unreadable. A person
+ * looking at "where did my request go" wants a hostname, so the bridge keeps
+ * a short-lived map of one to the other rather than making the page guess.
+ */
+let nodeNames = new Map();
+let namesFetchedAt = 0;
+
+async function nameOf(nodeId) {
+  if (Date.now() - namesFetchedAt > 5000) {
+    const nodes = await pool.use((mesh) => mesh.nodes());
+    nodeNames = new Map(nodes.map((node) => [node.nodeId, node]));
+    namesFetchedAt = Date.now();
+  }
+  const node = nodeNames.get(nodeId);
+  return node ? `${node.hostname} (${node.address})` : "unknown node";
+}
+
+/**
+ * Every place the request stopped on its way to being answered.
+ *
+ * This is the whole question "where is my work received": the browser reaches
+ * this process, this process reaches the controller, the controller hands the
+ * task to whichever node it chose, and that node is where the code actually
+ * ran. Nothing here is inferred — the node id comes back with the result.
+ */
+async function pathOf(result, totalMs) {
+  return [
+    { hop: "browser", where: "your machine", note: "picked the data" },
+    {
+      hop: "bridge",
+      where: `${hostname()}:${PORT} (this node process, pid ${process.pid})`,
+      note: `held the mesh connection, ${totalMs.toFixed(1)} ms round trip`,
+    },
+    {
+      hop: "controller",
+      where: `${MESH_HOST}:${MESH_PORT}`,
+      note: "chose the node and moved the data if it had to",
+    },
+    {
+      hop: "agent",
+      where: await nameOf(result.nodeId),
+      note: `ran it in ${result.durationMs.toFixed(2)} ms — this is where your work executed`,
+    },
+  ];
+}
 
 function json(response, status, body) {
   const payload = JSON.stringify(body);
@@ -113,12 +162,15 @@ const routes = {
       return { published, result };
     });
 
+    const totalMs = performance.now() - started;
     json(response, outcome.result.success ? 200 : 422, {
       dataId: outcome.published.dataId,
+      sizeBytes: outcome.published.sizeBytes,
       digest: Buffer.from(outcome.result.output).toString("hex"),
       nodeId: outcome.result.nodeId,
       taskMs: outcome.result.durationMs,
-      totalMs: performance.now() - started,
+      totalMs,
+      path: await pathOf(outcome.result, totalMs),
       error: outcome.result.error,
     });
   },
@@ -143,12 +195,15 @@ const routes = {
       // is first-come, first-served and the page waits behind the batch.
       mesh.run("cpu", payload, [], [], batch ? "background" : "high"),
     );
+    const totalMs = performance.now() - started;
 
     json(response, result.success ? 200 : 422, {
       nodeId: result.nodeId,
+      output: Buffer.from(result.output).toString("hex"),
       taskMs: result.durationMs,
-      totalMs: performance.now() - started,
+      totalMs,
       priority: batch ? "background" : "high",
+      path: await pathOf(result, totalMs),
       error: result.error,
     });
   },

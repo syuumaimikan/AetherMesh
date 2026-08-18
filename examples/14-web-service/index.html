@@ -2,12 +2,23 @@
 <meta charset="utf-8">
 <title>AetherMesh · service</title>
 <style>
-  body { font: 15px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; margin: 2rem auto; max-width: 46rem; padding: 0 1rem; }
-  h1 { font-size: 1.1rem; letter-spacing: .04em; }
+  :root { color-scheme: light dark; }
+  body { font: 15px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; margin: 2rem auto; max-width: 52rem; padding: 0 1rem; }
+  h1 { font-size: 1.1rem; letter-spacing: .05em; }
+  h2 { font-size: .72rem; letter-spacing: .12em; text-transform: uppercase; opacity: .6; margin: 1.4rem 0 .5rem; }
   button { font: inherit; padding: .4rem .9rem; cursor: pointer; }
-  pre { background: #0000000d; padding: .8rem; overflow-x: auto; border-radius: 4px; }
+  pre { background: #8881; padding: .8rem; overflow-x: auto; border-radius: 4px; margin: 0; }
   .row { display: flex; gap: .6rem; align-items: center; flex-wrap: wrap; margin: 1rem 0; }
   .dim { opacity: .6; }
+  .bad { color: #cf222e; }
+  ol.path { list-style: none; padding: 0; margin: 0; }
+  ol.path li { padding: .35rem 0 .35rem 1.6rem; position: relative; }
+  ol.path li::before { content: "│"; position: absolute; left: .4rem; opacity: .35; }
+  ol.path li:first-child::before { content: "┌"; }
+  ol.path li:last-child::before { content: "└"; }
+  .hop { display: inline-block; min-width: 6.5rem; opacity: .75; }
+  .here { font-weight: bold; }
+  .result { font-size: 1rem; word-break: break-all; }
 </style>
 
 <h1>AetherMesh · service</h1>
@@ -20,29 +31,81 @@
   <button id="health">Health</button>
 </div>
 
-<pre id="out">ready</pre>
+<h2>Result</h2>
+<pre id="result" class="result">nothing submitted yet</pre>
+
+<h2>Where it was received</h2>
+<ol class="path" id="path"><li class="dim">submit something to see the path</li></ol>
+
+<h2>Raw response</h2>
+<pre id="raw" class="dim">—</pre>
 
 <script type="module">
-  const out = document.getElementById("out");
-  const show = (label, body) =>
-    (out.textContent = `${label}\n${JSON.stringify(body, null, 2)}`);
+  const result = document.getElementById("result");
+  const raw = document.getElementById("raw");
+  const path = document.getElementById("path");
 
-  document.getElementById("hash").onclick = async () => {
+  /** The hop list, with the machine that actually ran the work marked. */
+  function showPath(hops) {
+    path.replaceChildren(...(hops ?? []).map((hop, index) => {
+      const li = document.createElement("li");
+      const name = document.createElement("span");
+      name.className = "hop";
+      name.textContent = hop.hop;
+      const where = document.createElement("span");
+      where.textContent = hop.where;
+      if (index === (hops.length - 1)) where.className = "here";
+      const note = document.createElement("div");
+      note.className = "dim";
+      note.style.paddingLeft = "6.5rem";
+      note.textContent = hop.note;
+      li.append(name, where, note);
+      return li;
+    }));
+  }
+
+  async function call(label, request) {
+    result.textContent = "waiting…";
+    result.classList.remove("bad");
+    path.replaceChildren();
+    raw.textContent = "—";
+
+    const response = await fetch(request.url, request.init);
+    const body = await response.json();
+
+    // textContent throughout: everything below came back from a task.
+    raw.textContent = JSON.stringify(body, null, 2);
+    showPath(body.path);
+
+    if (!response.ok) {
+      result.textContent = `${response.status} — ${body.error ?? "failed"}`;
+      result.classList.add("bad");
+      return;
+    }
+    result.textContent = label(body);
+  }
+
+  document.getElementById("hash").onclick = () => {
     const file = document.getElementById("file").files[0];
-    if (!file) return show("pick a file first", {});
-    out.textContent = "hashing…";
-    const response = await fetch("/api/hash", { method: "POST", body: file });
-    show(`POST /api/hash → ${response.status}`, await response.json());
+    if (!file) {
+      result.textContent = "pick a file first";
+      return;
+    }
+    return call(
+      (body) => `sha of ${body.sizeBytes} bytes\n${body.digest}`,
+      { url: "/api/hash", init: { method: "POST", body: file } },
+    );
   };
 
-  document.getElementById("work").onclick = async () => {
-    out.textContent = "working…";
-    const response = await fetch("/api/work?iterations=20000000", { method: "POST" });
-    show(`POST /api/work → ${response.status}`, await response.json());
-  };
+  document.getElementById("work").onclick = () =>
+    call(
+      (body) => `${body.taskMs.toFixed(2)} ms of work, output ${body.output}`,
+      { url: "/api/work?iterations=20000000", init: { method: "POST" } },
+    );
 
-  document.getElementById("health").onclick = async () => {
-    const response = await fetch("/healthz");
-    show(`GET /healthz → ${response.status}`, await response.json());
-  };
+  document.getElementById("health").onclick = () =>
+    call(
+      (body) => `${body.connected} of ${body.nodes} node(s) reachable`,
+      { url: "/healthz", init: {} },
+    );
 </script>

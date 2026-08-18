@@ -27,6 +27,12 @@ already on that node, so nothing moves and the round trip drops.
  "nodeId":"0f49d768-…","taskMs":0.19,"totalMs":10.4}
 ```
 
+The `nodeId` in that answer is where the work actually ran — the browser
+reached this bridge, the bridge reached the controller, and the controller
+handed the task to an agent. [`14-web-service`](../14-web-service) prints that
+path hop by hop and shows the same task turning up in the mesh's own view of
+what it just ran.
+
 ## Why a bridge, and not the mesh directly
 
 Because the bridge is where authentication belongs.
