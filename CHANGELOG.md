@@ -28,6 +28,13 @@ from 0.1.0 onward. Until then, `main` is the release.
 - **A workflow result says which step it belongs to.** `StepOutcome.step` was
   the position in the reply, so a workflow with a skipped step blamed the
   wrong step for everything after it.
+- **The Python and TypeScript SDKs reach the whole client API.** `workflow()`
+  (with `run` for resume), `recent()`, `stats()`, and the node fields added
+  since they were written — `address`, `latency_ms`, `datasets_held`,
+  `bytes_held`, `connected`. `examples/11-workflow` used to reach into a
+  private `_request` because the SDK had no `workflow()`; it uses the public
+  API now. The Go, Java, and .NET SDKs still lag.
+
 - **The TUI shows what the whole mesh ran, not just what it submitted.** A
   task sent from an SDK, a script, or another terminal now appears in a
   **Recent tasks** panel with where it ran, how long it took, and a short

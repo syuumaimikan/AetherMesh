@@ -1,6 +1,6 @@
-phase=task-history
+phase=sdk-catchup-py-ts
 status=complete
-next=A4-quic, A20-A23, SDK catch-up (workflow/run/stats/recent)
+next=A4-quic, A20-A23, SDK catch-up for go/java/dotnet
 
 # Working notes for whoever picks this up next. Not documentation — the READMEs
 # and docs/ are. This is the stuff that would otherwise have to be rediscovered.
@@ -93,6 +93,26 @@ completed:
   locality=1.0 -> 1 node, 36 ms, 1.0x. locality=0.0 -> 4 nodes, 13 ms, 2.7x.
   In A9 that same comparison showed no difference at all, because there was
   never a second task in flight. Docs corrected in three places.
+
+- SDK catch-up (Python + TypeScript): workflow() with `run` resume, recent(),
+  stats(), and the NodeSummary fields added since the SDKs were written
+  (address, latency, datasets_held, bytes_held, connected).
+
+  examples/11-workflow/chain.py was calling mesh._request() directly because
+  the SDK had no workflow(). That is the whole reason this phase existed - an
+  example reaching into a private method is the client API telling you it is
+  missing something. It uses the public API now and still reports 0 bytes.
+
+  stats() returns the raw dict/object rather than a typed shape: it is a
+  dashboard feed that grows fields, and a client receiving a new one should see
+  it rather than lose it.
+
+  Verified live against a 3-agent mesh, both SDKs: resume [0,1] on the second
+  submission, a different workflow under the same name refused, recent() and
+  node fields populated.
+
+  NOT DONE: go, java, dotnet. Same shape of change; they need toolchains this
+  machine only half has (Go lives in the scratchpad, uncommitted).
 
 - task history + TUI panel: asked for after running the TypeScript wasm example
   and having nowhere but that terminal to see the result. controller/history.rs
@@ -298,9 +318,9 @@ A14 OTel, A17-A23, A24-A26 bench
   survivable rather than fixing it; concurrent dispatch needs Controller to
   stop being &mut-per-task.
 
-- the 5 SDKs ignore the new NodeSummary fields (address, latency_ms,
-  bandwidth, datasets_held, bytes_held, connected) and have no stats() call.
-  Backward compatible, verified live. Mechanical to add; not this phase.
+- go/java/dotnet SDKs still ignore the newer NodeSummary fields and have no
+  workflow()/stats()/recent(). Python and TypeScript are done; the rest is the
+  same mechanical change.
 
 ## Open work
 

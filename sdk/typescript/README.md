@@ -39,6 +39,46 @@ new TextDecoder().decode(result.output); // "HELLO"
 
 Building a module from TypeScript, Rust, or Go: [`docs/wasm-tasks.md`](../../docs/wasm-tasks.md).
 
+### Work that depends on other work
+
+A workflow's steps run after the ones they depend on, and a step's output stays
+on the node that produced it — so the next step is scheduled *there* and the
+intermediate result never crosses the wire.
+
+```ts
+const result = await mesh.workflow([
+  { kind: "echo", payload: new TextEncoder().encode("...") },
+  { kind: "hash", dependsOn: [0] },
+  { kind: "hash", dependsOn: [1] },
+]);
+for (const step of result.steps) {
+  console.log(step.step, step.nodeId.slice(0, 8), `${step.durationMs.toFixed(1)} ms`);
+}
+```
+
+Name the run and a second submission picks up where the first stopped, which
+needs a controller started with `checkpoint_path`:
+
+```ts
+const result = await mesh.workflow(steps, "nightly");
+console.log(result.resumed); // [0, 1] — already finished, not run again
+```
+
+Reusing a name for a *different* workflow throws rather than resuming.
+
+### Watching the mesh
+
+```ts
+for (const task of await mesh.recent(10)) {
+  console.log(task.kind, task.nodeId.slice(0, 8), `${task.durationMs.toFixed(1)} ms`, task.preview);
+}
+```
+
+`recent()` is the whole mesh, not this connection: a task somebody else
+submitted is exactly the interesting case. `preview` is the front of the output
+with anything unprintable replaced — results stay on the node that produced
+them.
+
 ### Authentication and TLS
 
 ```ts
@@ -59,7 +99,10 @@ const mesh = await AetherMesh.connect({
 | `mesh.publishFile(path)` | same, reading from disk |
 | `mesh.run(kind, payload?, inputs?)` | `TaskResult` — built-in `echo`, `hash`, `cpu` |
 | `mesh.runWasm(moduleId, payload?, inputs?)` | `TaskResult` |
-| `mesh.nodes()` | `NodeSummary[]` |
+| `mesh.workflow(steps, run?)` | `WorkflowResult` — steps that depend on each other; `run` resumes |
+| `mesh.nodes()` | `NodeSummary[]` — labels, `datasetsHeld`, `connected`, … |
+| `mesh.recent(limit?)` | `FinishedTask[]` — what the *mesh* finished lately |
+| `mesh.stats()` | traffic, mesh counters, queue, dataset totals |
 | `mesh.close()` | — |
 
 A `TaskResult` carries `{ taskId, nodeId, success, output, durationMs, error? }`.

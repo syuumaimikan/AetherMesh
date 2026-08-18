@@ -24,11 +24,15 @@ from types import TracebackType
 __all__ = [
     "AetherMesh",
     "AetherMeshError",
+    "FinishedTask",
     "MeshExecutor",
     "MeshTask",
     "NodeSummary",
     "Published",
+    "Step",
+    "StepOutcome",
     "TaskResult",
+    "WorkflowResult",
 ]
 
 #: Refuse to allocate more than this for one response.
@@ -73,6 +77,77 @@ class NodeSummary:
     cpu_usage: float
     memory_usage: float
     labels: dict[str, str]
+    address: str = ""
+    latency_ms: float | None = None
+    bandwidth_bytes_per_sec: int | None = None
+    #: Datasets this node already holds, and their total size. Work reading
+    #: them costs no transfer, which is what the scheduler is deciding on.
+    datasets_held: int = 0
+    bytes_held: int = 0
+    #: Registered is not the same as reachable: a node keeps its registration
+    #: until its heartbeat times out, because one late heartbeat is not a death.
+    connected: bool = True
+
+
+@dataclass(frozen=True)
+class Step:
+    """One step of a workflow.
+
+    ``depends_on`` holds indices into the list of steps. Every dependency's
+    output becomes an input of the step waiting for it, so a step reads what
+    the steps before it produced — and, because the mesh knows which node holds
+    that output, reads it without moving it.
+    """
+
+    kind: str
+    payload: bytes = b""
+    depends_on: tuple[int, ...] = ()
+    inputs: tuple[str, ...] = ()
+    constraints: tuple[str, ...] = ()
+    module: str | None = None
+
+
+@dataclass(frozen=True)
+class StepOutcome:
+    """What one step of a workflow did."""
+
+    #: Which step of the submitted workflow this is — not its position in the
+    #: reply, which differs as soon as any step is skipped or resumed.
+    step: int
+    node_id: str
+    success: bool
+    output: bytes
+    duration_ms: float
+    error: str | None = None
+
+
+@dataclass(frozen=True)
+class WorkflowResult:
+    """What a workflow produced."""
+
+    steps: list[StepOutcome]
+    #: Steps never attempted because something they depend on failed.
+    skipped: list[int]
+    #: Steps an earlier run of the same name had already finished. Only ever
+    #: non-empty for a named run against a controller with a checkpoint file.
+    resumed: list[int]
+    success: bool
+
+
+@dataclass(frozen=True)
+class FinishedTask:
+    """One task that finished anywhere in the mesh."""
+
+    task_id: str
+    kind: str
+    node_id: str
+    success: bool
+    duration_ms: float
+    #: Size of the whole output, of which ``preview`` is the front.
+    output_bytes: int
+    #: The first bytes of the output, with anything unprintable replaced.
+    preview: str
+    seconds_ago: float
 
 
 class AetherMesh:
@@ -148,6 +223,93 @@ class AetherMesh:
         """Runs a WebAssembly module previously published."""
         return self._submit("wasm", payload, inputs or [], constraints or [], module_id)
 
+    def workflow(
+        self,
+        steps: list[Step],
+        run: str | None = None,
+    ) -> WorkflowResult:
+        """Runs several tasks, each after the ones it depends on.
+
+        ``run`` names the run so that submitting the same workflow again
+        resumes it rather than repeating it: steps that already finished are
+        skipped, provided their output is still on a node. It needs a
+        controller started with ``checkpoint_path``; without one the name is
+        accepted and the workflow runs from the start.
+
+        Reusing a name for a *different* workflow raises rather than resuming,
+        because skipping step 3 on the strength of some other graph's step 3
+        is the one failure here that produces a confident wrong answer.
+        """
+        request: dict = {
+            "type": "workflow",
+            "steps": [
+                {
+                    "kind": step.kind,
+                    "payload": base64.b64encode(step.payload).decode(),
+                    "depends_on": list(step.depends_on),
+                    "inputs": list(step.inputs),
+                    "constraints": list(step.constraints),
+                    "module": step.module,
+                }
+                for step in steps
+            ],
+        }
+        if run is not None:
+            request["run"] = run
+
+        frame = self._request(request)
+        self._expect(frame, "workflow")
+        return WorkflowResult(
+            steps=[
+                StepOutcome(
+                    step=int(outcome["step"]),
+                    node_id=outcome["node_id"],
+                    success=bool(outcome["success"]),
+                    output=base64.b64decode(outcome["output"]),
+                    duration_ms=float(outcome["duration_ms"]),
+                    error=outcome.get("error"),
+                )
+                for outcome in frame["steps"]
+            ],
+            skipped=[int(step) for step in frame.get("skipped") or []],
+            resumed=[int(step) for step in frame.get("resumed") or []],
+            success=bool(frame["success"]),
+        )
+
+    def stats(self) -> dict:
+        """What the mesh has moved, saved, run, and queued.
+
+        Returned as the controller sent it rather than as a dataclass: this is
+        a dashboard feed that grows fields, and a client that gets a new one it
+        does not know about should see it, not lose it.
+        """
+        frame = self._request({"type": "stats"})
+        self._expect(frame, "stats")
+        return {key: value for key, value in frame.items() if key != "type"}
+
+    def recent(self, limit: int = 20) -> list[FinishedTask]:
+        """The last few tasks that finished anywhere in the mesh.
+
+        Not only the ones this connection submitted — a task somebody else ran
+        is exactly the interesting case. The preview is the front of the
+        output, not the output: results stay on the node that produced them.
+        """
+        frame = self._request({"type": "recent", "limit": limit})
+        self._expect(frame, "recent")
+        return [
+            FinishedTask(
+                task_id=task["task_id"],
+                kind=task["kind"],
+                node_id=task["node_id"],
+                success=bool(task["success"]),
+                duration_ms=float(task["duration_ms"]),
+                output_bytes=int(task["output_bytes"]),
+                preview=task["preview"],
+                seconds_ago=float(task["seconds_ago"]),
+            )
+            for task in frame["tasks"]
+        ]
+
     def nodes(self) -> list[NodeSummary]:
         """Lists the nodes currently in the mesh."""
         frame = self._request({"type": "nodes"})
@@ -160,6 +322,12 @@ class AetherMesh:
                 cpu_usage=float(node["cpu_usage"]),
                 memory_usage=float(node["memory_usage"]),
                 labels=dict(node.get("labels") or {}),
+                address=node.get("address", ""),
+                latency_ms=node.get("latency_ms"),
+                bandwidth_bytes_per_sec=node.get("bandwidth_bytes_per_sec"),
+                datasets_held=int(node.get("datasets_held", 0)),
+                bytes_held=int(node.get("bytes_held", 0)),
+                connected=bool(node.get("connected", True)),
             )
             for node in frame["nodes"]
         ]

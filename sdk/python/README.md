@@ -64,6 +64,49 @@ with MeshExecutor.connect(port=7100, max_workers=8) as pool:
 submitting a function raises `TypeError` rather than quietly running it here.
 See [`examples/10-executor`](../../examples/10-executor).
 
+### Work that depends on other work
+
+A workflow's steps run after the ones they depend on, and a step's output stays
+on the node that produced it — so the next step is scheduled *there* and the
+intermediate result never crosses the wire.
+
+```python
+from aethermesh import AetherMesh, Step
+
+with AetherMesh.connect(port=7100) as mesh:
+    result = mesh.workflow([
+        Step("echo", payload=b"..."),
+        Step("hash", depends_on=(0,)),
+        Step("hash", depends_on=(1,)),
+    ])
+    for step in result.steps:
+        print(step.step, step.node_id[:8], f"{step.duration_ms:.1f} ms")
+```
+
+Name the run and a second submission picks up where the first stopped, which
+needs a controller started with `checkpoint_path`:
+
+```python
+result = mesh.workflow(steps, run="nightly")
+print(result.resumed)   # [0, 1] — already finished, not run again
+```
+
+Reusing a name for a *different* workflow raises rather than resuming.
+
+### Watching the mesh
+
+```python
+for task in mesh.recent(10):
+    print(task.kind, task.node_id[:8], f"{task.duration_ms:.1f} ms", task.preview)
+
+print(mesh.stats()["traffic"]["transfers_skipped"])
+```
+
+`recent()` is the whole mesh, not this connection: a task somebody else
+submitted is exactly the interesting case. `preview` is the front of the
+output with anything unprintable replaced — results stay on the node that
+produced them.
+
 ### Authentication and TLS
 
 ```python
@@ -84,7 +127,10 @@ mesh = AetherMesh.connect(
 | `mesh.publish_file(path)` | same, reading from disk |
 | `mesh.run(kind, payload=b"", inputs=[], constraints=[])` | `TaskResult` — built-in `echo`, `hash`, `cpu` |
 | `mesh.run_wasm(module_id, payload=b"", inputs=[], constraints=[])` | `TaskResult` |
-| `mesh.nodes()` | `list[NodeSummary]` — including each node's `labels` |
+| `mesh.workflow(steps, run=None)` | `WorkflowResult` — steps that depend on each other; `run` resumes |
+| `mesh.nodes()` | `list[NodeSummary]` — labels, `datasets_held`, `connected`, … |
+| `mesh.recent(limit=20)` | `list[FinishedTask]` — what the *mesh* finished lately |
+| `mesh.stats()` | `dict` — traffic, mesh counters, queue, dataset totals |
 | `mesh.close()` | — |
 | `MeshExecutor.connect(..., max_workers=4)` | a `concurrent.futures.Executor` |
 | `pool.builtin(kind)` / `pool.module(path)` | a `MeshTask` to submit or map |

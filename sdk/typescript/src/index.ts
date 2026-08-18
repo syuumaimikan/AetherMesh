@@ -57,6 +57,78 @@ export interface NodeSummary {
   memoryUsage: number;
   /** What the node claims to be: `{ gpu: "true", region: "eu-west" }`. */
   labels: Record<string, string>;
+  address: string;
+  latencyMs?: number;
+  bandwidthBytesPerSec?: number;
+  /**
+   * Datasets this node already holds, and their total size. Work reading them
+   * costs no transfer, which is the decision the scheduler makes every time.
+   */
+  datasetsHeld: number;
+  bytesHeld: number;
+  /**
+   * Registered is not the same as reachable: a node keeps its registration
+   * until its heartbeat times out, because one late heartbeat is not a death.
+   */
+  connected: boolean;
+}
+
+/**
+ * One step of a workflow.
+ *
+ * `dependsOn` holds indices into the list of steps. Every dependency's output
+ * becomes an input of the step waiting for it, so a step reads what the steps
+ * before it produced — and, because the mesh knows which node holds that
+ * output, reads it without moving it.
+ */
+export interface Step {
+  kind: string;
+  payload?: Uint8Array;
+  dependsOn?: number[];
+  inputs?: string[];
+  constraints?: string[];
+  module?: string;
+}
+
+/** What one step of a workflow did. */
+export interface StepOutcome {
+  /**
+   * Which step of the submitted workflow this is — not its position in the
+   * reply, which differs as soon as any step is skipped or resumed.
+   */
+  step: number;
+  nodeId: string;
+  success: boolean;
+  output: Uint8Array;
+  durationMs: number;
+  error?: string;
+}
+
+/** What a workflow produced. */
+export interface WorkflowResult {
+  steps: StepOutcome[];
+  /** Steps never attempted because something they depend on failed. */
+  skipped: number[];
+  /**
+   * Steps an earlier run of the same name had already finished. Only ever
+   * non-empty for a named run against a controller with a checkpoint file.
+   */
+  resumed: number[];
+  success: boolean;
+}
+
+/** One task that finished anywhere in the mesh. */
+export interface FinishedTask {
+  taskId: string;
+  kind: string;
+  nodeId: string;
+  success: boolean;
+  durationMs: number;
+  /** Size of the whole output, of which `preview` is the front. */
+  outputBytes: number;
+  /** The first bytes of the output, with anything unprintable replaced. */
+  preview: string;
+  secondsAgo: number;
 }
 
 /** The controller answered with an error, or the connection failed. */
@@ -177,6 +249,92 @@ export class AetherMesh {
     });
   }
 
+  /**
+   * Runs several tasks, each after the ones it depends on.
+   *
+   * `run` names the run, so submitting the same workflow again resumes it
+   * rather than repeating it: steps that already finished are skipped,
+   * provided their output is still on a node. It needs a controller started
+   * with `checkpoint_path`; without one the name is accepted and the workflow
+   * runs from the start.
+   *
+   * Reusing a name for a *different* workflow throws rather than resuming.
+   * Skipping step 3 on the strength of another graph's step 3 is the one
+   * failure here that would produce a confident wrong answer.
+   */
+  async workflow(steps: Step[], run?: string): Promise<WorkflowResult> {
+    const request: Frame = {
+      type: "workflow",
+      steps: steps.map((step) => ({
+        kind: step.kind,
+        payload: Buffer.from(step.payload ?? new Uint8Array()).toString(
+          "base64",
+        ),
+        depends_on: step.dependsOn ?? [],
+        inputs: step.inputs ?? [],
+        constraints: step.constraints ?? [],
+        module: step.module ?? null,
+      })),
+    };
+    if (run !== undefined) {
+      request.run = run;
+    }
+
+    const frame = await this.#request(request);
+    this.#expect(frame, "workflow");
+    return {
+      steps: (frame.steps as Frame[]).map((outcome) => ({
+        step: Number(outcome.step),
+        nodeId: String(outcome.node_id),
+        success: Boolean(outcome.success),
+        output: new Uint8Array(
+          Buffer.from(String(outcome.output ?? ""), "base64"),
+        ),
+        durationMs: Number(outcome.duration_ms),
+        error: outcome.error as string | undefined,
+      })),
+      skipped: ((frame.skipped as number[]) ?? []).map(Number),
+      resumed: ((frame.resumed as number[]) ?? []).map(Number),
+      success: Boolean(frame.success),
+    };
+  }
+
+  /**
+   * What the mesh has moved, saved, run, and queued.
+   *
+   * Returned as the controller sent it rather than as a typed shape: this is
+   * a dashboard feed that grows fields, and a client that gets one it does not
+   * know about should see it rather than lose it.
+   */
+  async stats(): Promise<Record<string, unknown>> {
+    const frame = await this.#request({ type: "stats" });
+    this.#expect(frame, "stats");
+    const { type: _type, ...rest } = frame;
+    return rest;
+  }
+
+  /**
+   * The last few tasks that finished anywhere in the mesh.
+   *
+   * Not only the ones this connection submitted — a task somebody else ran is
+   * exactly the interesting case. The preview is the front of the output, not
+   * the output: results stay on the node that produced them.
+   */
+  async recent(limit = 20): Promise<FinishedTask[]> {
+    const frame = await this.#request({ type: "recent", limit });
+    this.#expect(frame, "recent");
+    return (frame.tasks as Frame[]).map((task) => ({
+      taskId: String(task.task_id),
+      kind: String(task.kind),
+      nodeId: String(task.node_id),
+      success: Boolean(task.success),
+      durationMs: Number(task.duration_ms),
+      outputBytes: Number(task.output_bytes),
+      preview: String(task.preview),
+      secondsAgo: Number(task.seconds_ago),
+    }));
+  }
+
   /** Lists the nodes currently in the mesh. */
   async nodes(): Promise<NodeSummary[]> {
     const frame = await this.#request({ type: "nodes" });
@@ -188,6 +346,12 @@ export class AetherMesh {
       cpuUsage: Number(node.cpu_usage),
       memoryUsage: Number(node.memory_usage),
       labels: (node.labels as Record<string, string>) ?? {},
+      address: String(node.address ?? ""),
+      latencyMs: node.latency_ms as number | undefined,
+      bandwidthBytesPerSec: node.bandwidth_bytes_per_sec as number | undefined,
+      datasetsHeld: Number(node.datasets_held ?? 0),
+      bytesHeld: Number(node.bytes_held ?? 0),
+      connected: Boolean(node.connected ?? true),
     }));
   }
 
