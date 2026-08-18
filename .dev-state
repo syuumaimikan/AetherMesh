@@ -1,11 +1,11 @@
-phase=advanced-A25
+phase=advanced-A26
 status=complete
-next=A26-regression-benchmark (or A4 QUIC)
+next=A4-quic (or A8/A9 workflow DAG)
 
 # Working notes for whoever picks this up next. Not documentation — the READMEs
 # and docs/ are. This is the stuff that would otherwise have to be rediscovered.
 
-test counts: 381 default / 434 with tls + cloud-http
+test counts: 392 default / 445 with tls + cloud-http
 
 ## Advanced phases
 
@@ -44,8 +44,14 @@ completed:
   needs. Verified by rerunning a report's own command on a restarted mesh:
   identical bytes, wall clock within 3 %.
 
-next: A26 regression benchmark (compare two reports, warn past a threshold,
-something light enough for CI) or A4 QUIC. Still nobody has run this on real
+- A26 regression: `regress` compares a fresh run against bench/baseline.json
+  and exits non-zero on a gated regression. CI job starts a real controller
+  and two real agents and runs it on every push. Byte counts gate (arithmetic,
+  verified stable across restarts/seeds/node counts); timings are advisory
+  because a shared runner's wall clock is not. Verified by hand-editing a
+  baseline to claim perfect dedup and watching it fail with exit 1.
+
+next: A4 QUIC, or A8/A9 workflow DAG. Still nobody has run this on real
 hardware; that is now a nodes.toml and three machines away rather than a
 harness away, which is as far as it can be closed from here.
 

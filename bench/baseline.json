@@ -1,0 +1,55 @@
+{
+  "environment": {
+    "measured_at": "2026-08-18T05:59:11Z",
+    "client_os": "windows",
+    "client_arch": "x86_64",
+    "client_cpus": 16,
+    "controller": "127.0.0.1:7100",
+    "version": "0.1.0",
+    "nodes": [
+      {
+        "hostname": "syuum",
+        "address": "127.0.0.1:7002",
+        "cpu_cores": 16,
+        "latency_ms": 0.214848,
+        "bandwidth_bytes_per_sec": 16371823,
+        "labels": {}
+      },
+      {
+        "hostname": "syuum",
+        "address": "127.0.0.1:7001",
+        "cpu_cores": 16,
+        "latency_ms": 0.12730598,
+        "bandwidth_bytes_per_sec": null,
+        "labels": {}
+      }
+    ],
+    "loopback_only": true,
+    "command": "cargo run --release -p aether-benchmark -- network --controller 127.0.0.1:7100 --tasks 8 --dataset-bytes 1048576 --seed 1787032751278397900"
+  },
+  "tasks": 8,
+  "dataset_bytes": 1048576,
+  "seed": 1787032751278397900,
+  "baseline": {
+    "bytes": 8388608,
+    "bytes_uncompressed": 8388608,
+    "transfers_skipped": 0,
+    "chunks_skipped": 0,
+    "tasks": 8,
+    "wall_ms": 79.1868,
+    "node_ms": 1.5976000000000001
+  },
+  "aethermesh": {
+    "bytes": 1048576,
+    "bytes_uncompressed": 1048576,
+    "transfers_skipped": 7,
+    "chunks_skipped": 0,
+    "tasks": 8,
+    "wall_ms": 7.75,
+    "node_ms": 1.4835
+  },
+  "baseline_bytes": 8388608,
+  "aethermesh_bytes": 1048576,
+  "reduction_percent": 87.5,
+  "warnings": []
+}

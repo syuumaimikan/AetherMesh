@@ -39,6 +39,45 @@ jobs:
       - name: Dashboard examples build
         run: cargo build -p aether-tui --examples
 
+  # The gated metrics are byte counts, which are arithmetic rather than
+  # measurement: identical across restarts, seeds, and node counts. Wall clock
+  # on a shared runner is not, so it is reported and never gates.
+  regression:
+    name: benchmark regression
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build the mesh
+        run: cargo build --release -p aether-controller -p aether-agent -p aether-benchmark
+
+      - name: Start a controller and two agents
+        run: |
+          set -euo pipefail
+          ./target/release/aether-controller --listen 127.0.0.1:7000             --client-listen 127.0.0.1:7100 &
+
+          # Wait on the port rather than on a sleep. A fixed sleep is either
+          # too short on a loaded runner or wasted time on an idle one.
+          for _ in $(seq 1 100); do
+            (exec 3<>/dev/tcp/127.0.0.1/7100) 2>/dev/null && break
+            sleep 0.1
+          done
+
+          ./target/release/aether-agent --controller 127.0.0.1:7000             --advertise 127.0.0.1:7001 --identity-path ./ci-a.id &
+          ./target/release/aether-agent --controller 127.0.0.1:7000             --advertise 127.0.0.1:7002 --identity-path ./ci-b.id &
+
+          # And on both agents actually registering, for the same reason.
+          for _ in $(seq 1 100); do
+            nodes=$(./target/release/aether-benchmark network --tasks 1               --dataset-bytes 1024 --format json 2>/dev/null               | grep -c '"hostname"' || true)
+            [ "$nodes" -ge 2 ] && break
+            sleep 0.2
+          done
+
+      - name: Compare against the committed baseline
+        run: ./target/release/aether-benchmark regress --baseline bench/baseline.json
+
   lint:
     runs-on: ubuntu-latest
     steps:

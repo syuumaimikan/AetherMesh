@@ -2,7 +2,10 @@
 
 use std::path::PathBuf;
 
-use aether_benchmark::network::{self, NetworkOptions, NodesConfig};
+use anyhow::Context as _;
+
+use aether_benchmark::network::{self, NetworkOptions, NetworkReport, NodesConfig};
+use aether_benchmark::regression::{self, Comparison};
 use aether_benchmark::{BenchmarkConfig, Mode, compare, run};
 use aether_core::task::kind;
 use clap::{Args as ClapArgs, Parser, Subcommand, ValueEnum};
@@ -67,6 +70,38 @@ enum Command {
         /// seed actually used is in the report.
         #[arg(long)]
         seed: Option<u64>,
+
+        #[arg(long, value_enum, default_value_t = Format::Text)]
+        format: Format,
+
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
+    /// Runs the network benchmark and compares it against a saved baseline.
+    ///
+    /// Exits non-zero when a gated metric regressed, so this can be a CI step.
+    /// Bytes gate; timings are reported beside them, because a shared runner's
+    /// wall clock varies by more than most real regressions and a check that
+    /// cries wolf is a check that gets switched off.
+    Regress {
+        /// A report from `network --format json`.
+        #[arg(long)]
+        baseline: PathBuf,
+
+        #[arg(long, default_value = DEFAULT_CONTROLLER)]
+        controller: String,
+
+        #[arg(long, env = "AETHERMESH_TOKEN")]
+        token: Option<String>,
+
+        /// How far a gated metric may drift before it counts as a regression.
+        #[arg(long, default_value_t = regression::DEFAULT_TOLERANCE_PERCENT)]
+        tolerance: f64,
+
+        /// Also fail on timings, with this tolerance. Only worth it on
+        /// hardware nobody else is sharing.
+        #[arg(long)]
+        gate_timing: Option<f64>,
 
         #[arg(long, value_enum, default_value_t = Format::Text)]
         format: Format,
@@ -210,6 +245,46 @@ async fn main() -> anyhow::Result<()> {
                 Format::Json => serde_json::to_string_pretty(&report)?,
             };
             return finish(output, rendered);
+        }
+        Command::Regress {
+            baseline,
+            controller,
+            token,
+            tolerance,
+            gate_timing,
+            format,
+            output,
+        } => {
+            let previous: NetworkReport = serde_json::from_slice(
+                &std::fs::read(&baseline)
+                    .with_context(|| format!("reading the baseline at {}", baseline.display()))?,
+            )
+            .with_context(|| format!("{} is not a network report", baseline.display()))?;
+
+            // The same work the baseline measured, or the comparison is
+            // between two different questions.
+            let options = NetworkOptions {
+                nodes_config: None,
+                controller,
+                token,
+                tasks: previous.tasks,
+                dataset_bytes: previous.dataset_bytes,
+                seed: network::fresh_seed(),
+            };
+
+            let current = network::run(&options, &NodesConfig::default()).await?;
+            let comparison = Comparison::of(&previous, &current, tolerance, gate_timing)?;
+
+            let rendered = match format {
+                Format::Text => comparison.to_text(),
+                Format::Json => serde_json::to_string_pretty(&comparison)?,
+            };
+            finish(output, rendered)?;
+
+            if comparison.failed() {
+                anyhow::bail!("a gated metric regressed against {}", baseline.display());
+            }
+            return Ok(());
         }
     };
 

@@ -218,3 +218,60 @@ measuring a memory copy.
 That gap is now a `nodes.toml` and three machines away rather than a harness
 away, which is as far as it can be closed from here. If you have the machines,
 this is the most valuable contribution the project can receive.
+
+### Catching a regression
+
+`bench/baseline.json` is a committed report. `regress` runs the same work again
+and compares:
+
+```bash
+cargo run --release -p aether-benchmark -- regress --baseline bench/baseline.json
+```
+
+```
+                            baseline       current    change
+  bytes moved              1048576.0     1048576.0      0.0%  ok
+  traffic reduction %           87.5          87.5      0.0%  ok
+  sends skipped                  7.0           7.0      0.0%  ok
+  wall clock ms                  7.8           7.7     -0.4%  ok
+  mean task ms                   0.2           0.2      1.2%  ok
+
+  No gated regression.
+```
+
+It exits non-zero when a **gated** metric regressed, and CI runs it on every
+push against a real controller and two real agents.
+
+**Only the byte counts gate.** That is the whole design. `bytes_uncompressed`
+for a given task count and dataset size is arithmetic rather than measurement —
+checked identical across restarts, across seeds, and between a one-agent and a
+two-agent mesh. It moves when deduplication or locality breaks and at no other
+time.
+
+Wall clock on a shared CI runner does not behave that way. A check built on it
+fails for reasons that have nothing to do with the change, gets labelled flaky,
+and then gets ignored — which leaves you worse off than before, because now
+nobody is watching. So timings are printed beside the gated metrics and marked
+`warn` when they drift, and `--gate-timing 20` turns them into failures for
+anyone running on hardware they control.
+
+A comparison between reports that measured *different work* is refused outright
+rather than reported as a change:
+
+```
+Error: the reports measured different work (8 vs 20 tasks); comparing them
+would report a difference nobody made
+```
+
+### Moving the baseline
+
+When a change legitimately alters the byte counts — a different chunk size, a
+new compression rule — regenerate it and say why in the commit:
+
+```bash
+cargo run --release -p aether-benchmark -- network \
+  --tasks 8 --dataset-bytes 1048576 --format json --output bench/baseline.json
+```
+
+A baseline that gets regenerated whenever it complains is not a baseline. The
+number is meant to be argued with.

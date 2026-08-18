@@ -388,6 +388,8 @@ Error: expected 3 node(s) but the mesh has 2; a result measured on a
 different mesh is not the result you asked for
 ```
 
+A committed baseline (`bench/baseline.json`) turns this into a CI gate: every push reruns it against a real controller and two real agents and fails if the traffic reduction drifted. Only the byte counts gate — they are arithmetic, not measurement — while wall clock is reported beside them and never fails the build.
+
 Every report ends with the command that reproduces it, seed included, because the seed deliberately is not fixed — the nodes remember what they have been sent, so repeating one measures a mesh that already holds everything. Rerunning that command against a restarted mesh reproduced 80.0 MiB / 4.0 MiB / 95.0 % exactly.
 
 The report also carries the environment it came from — nodes, addresses, measured latency, client CPU count, OS — and says plainly when every node is on loopback. Full procedure, including the three-machine case: [`docs/benchmarks.md`](docs/benchmarks.md).

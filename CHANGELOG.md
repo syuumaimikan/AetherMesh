@@ -21,6 +21,13 @@ from 0.1.0 onward. Until then, `main` is the release.
   Dispatch was strictly first-come, first-served before this — and, since one
   task is dispatched at a time, a long backlog meant urgent work waited behind
   all of it.
+- **A regression check that runs in CI** (`aether-benchmark regress`). Every
+  push builds a real controller and two real agents, reruns the network
+  benchmark, and fails if traffic reduction or bytes moved drifted from
+  `bench/baseline.json`. Only byte counts gate: they are arithmetic given the
+  configuration, verified identical across restarts, seeds and node counts.
+  Wall clock on a shared runner is reported beside them and never fails the
+  build, because a check that cries wolf is a check that gets switched off.
 - **Benchmark reproducibility.** Every network report ends with the command
   that produces it again, seed included; records the client's CPU count, OS,
   and an RFC 3339 timestamp; and `docs/benchmarks.md` documents what has to be
