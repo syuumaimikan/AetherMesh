@@ -27,7 +27,9 @@ if (!modulePath) {
 }
 
 const module = await mesh.publishFile(modulePath);
-console.log(`module ${module.dataId.slice(0, 16)}… (${module.sizeBytes} bytes)`);
+console.log(
+  `module ${module.dataId.slice(0, 16)}… (${module.sizeBytes} bytes)`,
+);
 
 const input = new TextEncoder().encode(process.argv[3] ?? "aethermesh");
 const result = await mesh.runWasm(module.dataId, input);
@@ -39,6 +41,8 @@ if (!result.success) {
 }
 
 console.log("output:", new TextDecoder().decode(result.output));
-console.log(`ran on ${result.nodeId.slice(0, 8)} in ${result.durationMs.toFixed(2)} ms`);
+console.log(
+  `ran on ${result.nodeId.slice(0, 8)} in ${result.durationMs.toFixed(2)} ms`,
+);
 
 mesh.close();
