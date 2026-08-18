@@ -237,6 +237,13 @@ A14 OTel, A17-A23, A24-A26 bench
   newlines. Use python or the Edit tool for source files.
 - sysinfo's first CPU sample after construction is arbitrary, not 0.0 — on
   Windows it reports 100%. local_node_info sleeps one interval before sampling.
+- enabling tracing-subscriber's env-filter feature changes what fmt::init()
+  defaults to with RUST_LOG unset: INFO without it, ERROR with it. Cargo
+  unifies features across a workspace build, so turning it on for one crate
+  made BOTH binaries print nothing at startup. Reported by a user running
+  aether-controller and seeing an empty terminal. The default is explicit now
+  (main.rs console_filter) and a test pins the fallback. Every test in this
+  session had set RUST_LOG, which is exactly why it was not caught.
 - cargo test -p aether-agent --all-features fails: it enables the agent's tls
   feature but not the controller's. Test the workspace, not the crate.
 - Go toolchain lives in the scratchpad (not committed): go1.24.0 windows-amd64

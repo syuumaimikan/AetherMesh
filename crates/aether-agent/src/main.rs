@@ -78,6 +78,33 @@ struct Args {
     otlp_endpoint: Option<String>,
 }
 
+/// Level the console shows when nobody set `RUST_LOG`.
+const DEFAULT_LOG: &str = "info";
+
+/// The console filter, from `RUST_LOG`.
+///
+/// Spelled out rather than left to `tracing_subscriber::fmt::init()`. Its own
+/// default depends on whether the `env-filter` feature happens to be compiled
+/// in — INFO without it, ERROR with it — and features are unified across a
+/// workspace build, so enabling `env-filter` for one crate silently turned
+/// both binaries mute for anyone who had not set `RUST_LOG`. A program that
+/// starts up and says nothing looks broken, and was.
+fn console_filter() -> tracing_subscriber::EnvFilter {
+    filter_from("RUST_LOG")
+}
+
+fn filter_from(variable: &str) -> tracing_subscriber::EnvFilter {
+    tracing_subscriber::EnvFilter::try_from_env(variable)
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(DEFAULT_LOG))
+}
+
+/// Logs to the console and nowhere else.
+fn init_console_logging() {
+    tracing_subscriber::fmt()
+        .with_env_filter(console_filter())
+        .init();
+}
+
 /// Starts logging, and tracing export when an endpoint is configured.
 ///
 /// The returned value has to outlive the work: dropping it flushes whatever
@@ -92,14 +119,14 @@ fn start_tracing(endpoint: Option<&str>) -> anyhow::Result<Option<impl Sized>> {
 
     #[cfg(not(feature = "otel"))]
     if endpoint.is_some() {
-        tracing_subscriber::fmt::init();
+        init_console_logging();
         tracing::warn!(
             "otlp_endpoint is set but this build has no OTLP support; rebuild with --features otel"
         );
         return Ok(None::<()>);
     }
 
-    tracing_subscriber::fmt::init();
+    init_console_logging();
     Ok(None)
 }
 
@@ -236,4 +263,20 @@ async fn main() -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use tracing_subscriber::filter::LevelFilter;
+
+    use super::*;
+
+    #[test]
+    fn an_unset_variable_still_shows_something() {
+        // Reads a name nothing sets rather than clearing RUST_LOG, which would
+        // race every other test in the process.
+        let filter = filter_from("AETHERMESH_LOG_FILTER_THAT_IS_NEVER_SET");
+
+        assert_eq!(filter.max_level_hint(), Some(LevelFilter::INFO));
+    }
 }

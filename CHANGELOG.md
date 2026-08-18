@@ -28,6 +28,13 @@ from 0.1.0 onward. Until then, `main` is the release.
 - **A workflow result says which step it belongs to.** `StepOutcome.step` was
   the position in the reply, so a workflow with a skipped step blamed the
   wrong step for everything after it.
+- **Fixed: the binaries started up silently.** Enabling `tracing-subscriber`'s
+  `env-filter` feature for the tracing work changed what
+  `tracing_subscriber::fmt::init()` defaults to when `RUST_LOG` is unset —
+  INFO without that feature, ERROR with it — and cargo unifies features across
+  a workspace build, so both binaries went mute for anyone who had not set
+  `RUST_LOG`. The default is now spelled out rather than inherited.
+
 - **Traces, so you can ask why one task was slow.** A controller built with
   `--features otel` and started with `--otlp-endpoint` exports OTLP/HTTP JSON
   spans for placement, input transfer, and dispatch. Measured: four identical
