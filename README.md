@@ -318,6 +318,18 @@ to the node. After that the data is there, and the same span takes three
 microseconds. A counter would have reported 4 MiB moved and four tasks run —
 true, and no help in working out which task paid for it.
 
+The trace carries across machines. The controller sends its context with the
+assignment, so the node that runs the task joins the same trace:
+
+```
+aether-controller  dispatch   1232 us  trace=2ab06f53
+aether-agent       execute    1043 us  trace=2ab06f53
+```
+
+That gap is the point: the controller waited 1232 us and the node worked for
+1043 us of it, so 190 us went on the wire and the queue. "Is the network slow
+or is the work slow" is otherwise a guess.
+
 Off unless you name an endpoint, and behind a feature flag so a build for
 small boards does not compile an exporter it will never point anywhere. The
 payload is OTLP/HTTP **JSON**, so any collector works and a twenty-line one is

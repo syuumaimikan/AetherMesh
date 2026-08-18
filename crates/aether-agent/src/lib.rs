@@ -6,6 +6,8 @@ pub mod executor;
 pub mod heartbeat;
 pub mod identity;
 pub mod metrics;
+#[cfg(feature = "otel")]
+pub mod otel;
 pub mod reconnect;
 
 #[cfg(feature = "tls")]

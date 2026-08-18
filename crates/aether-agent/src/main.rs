@@ -71,12 +71,42 @@ struct Args {
     /// connection drops. `0` exits instead.
     #[arg(long)]
     reconnect_max_secs: Option<u64>,
+
+    /// OTLP/HTTP endpoint to send traces to, e.g.
+    /// `http://127.0.0.1:4318/v1/traces`. Needs a build with `--features otel`.
+    #[arg(long)]
+    otlp_endpoint: Option<String>,
+}
+
+/// Starts logging, and tracing export when an endpoint is configured.
+///
+/// The returned value has to outlive the work: dropping it flushes whatever
+/// has not been exported yet.
+fn start_tracing(endpoint: Option<&str>) -> anyhow::Result<Option<impl Sized>> {
+    #[cfg(feature = "otel")]
+    if let Some(endpoint) = endpoint {
+        let guard = aether_agent::otel::init(endpoint)?;
+        info!(endpoint, "exporting traces");
+        return Ok(Some(guard));
+    }
+
+    #[cfg(not(feature = "otel"))]
+    if endpoint.is_some() {
+        tracing_subscriber::fmt::init();
+        tracing::warn!(
+            "otlp_endpoint is set but this build has no OTLP support; rebuild with --features otel"
+        );
+        return Ok(None::<()>);
+    }
+
+    tracing_subscriber::fmt::init();
+    Ok(None)
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt::init();
     let args = Args::parse();
+    let _tracing = start_tracing(args.otlp_endpoint.as_deref())?;
 
     let mut config = AgentConfig::load_or_default(args.config.as_deref())?;
     if let Some(controller) = args.controller {

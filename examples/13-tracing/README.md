@@ -19,10 +19,15 @@ export working without installing a tracing backend:
 python collector.py
 ```
 
-Then start the controller pointing at it, plus an agent:
+Then start the controller and the agent pointing at it — both, because the
+interesting part is that they end up in the same trace:
 
 ```bash
 ./target/release/aether-controller --otlp-endpoint http://127.0.0.1:4318/v1/traces
+```
+
+```bash
+./target/release/aether-agent --otlp-endpoint http://127.0.0.1:4318/v1/traces
 ```
 
 Submit some work — [`../12-verify`](../12-verify) will do:
@@ -65,9 +70,30 @@ Turning the terminal down to `warn` should not silently stop your tracing, and
 with one shared filter it would: an instrumented span is disabled before any
 exporter sees it.
 
+## One trace, two machines
+
+The controller sends its trace context along with the assignment, so the node
+that runs the task joins the trace instead of starting one:
+
+```
+aether-controller  dispatch   1232 us  trace=2ab06f53 {'task_id': '38911df6…'}
+aether-agent       execute    1043 us  trace=2ab06f53 {'task_id': '38911df6…'}
+```
+
+Same `trace`, two services. And a number that neither process could produce on
+its own: the controller waited 1232 us, the node worked for 1043 us of it, so
+190 us went on the wire and the queue. Ask "is the network slow or is the work
+slow" without this and you are guessing.
+
+The header is W3C `traceparent`, sent as an ordinary string on the assignment.
+An agent that was not built with `--features otel` ignores it; a controller
+that was not exporting sends `None`; a header the node cannot parse leaves its
+span as a root and the task still runs. Tracing is never allowed to be the
+reason work fails.
+
 ## What is not here yet
 
-The spans stop at the controller. A task's span ends when the node answers, so
-you can see how long a node took but not what it did in that time — the trace
-context is not carried across the protocol to the agent yet. That is the next
-piece, and until it exists this is one process's view of a distributed system.
+Data transfers are timed as one span (`send_inputs`) rather than per chunk, so
+a slow transfer does not yet say *which* chunk was slow. The client API is not
+instrumented either: a trace starts when the controller accepts the task, not
+when your program asked for it.

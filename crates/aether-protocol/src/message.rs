@@ -112,7 +112,19 @@ pub enum Message {
         bytes: Vec<u8>,
     },
     /// Controller -> agent: run this task here.
-    TaskAssignment { node_id: NodeId, task: Task },
+    ///
+    /// `traceparent` is the W3C trace context of whoever asked for this work,
+    /// when the controller is exporting traces. It is a string on the wire and
+    /// nothing else: an agent that does not care ignores it, and a controller
+    /// built without tracing sends `None`. Carrying it is what makes a task's
+    /// span continue on the machine that runs it rather than stopping at the
+    /// controller, which is where a distributed trace stops being one.
+    TaskAssignment {
+        node_id: NodeId,
+        task: Task,
+        #[serde(default)]
+        traceparent: Option<String>,
+    },
     /// Agent -> controller: the task finished.
     TaskCompleted { result: TaskResult },
     /// Agent -> controller: a dataset is complete and verified locally.

@@ -84,11 +84,13 @@ impl SimulatedMesh {
 impl TaskTransport for SimulatedMesh {
     async fn dispatch(&self, node_id: NodeId, task: &Task) -> Result<TaskResult, DispatchError> {
         let assignment = Message::TaskAssignment {
+            traceparent: None,
             node_id,
             task: task.clone(),
         };
 
-        let Message::TaskAssignment { node_id, task } = self.transfer(node_id, &assignment)? else {
+        let Message::TaskAssignment { node_id, task, .. } = self.transfer(node_id, &assignment)?
+        else {
             return Err(DispatchError::Unreachable {
                 node_id,
                 reason: "unexpected message on the assignment path".to_string(),

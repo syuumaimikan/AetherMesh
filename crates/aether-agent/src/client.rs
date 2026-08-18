@@ -131,6 +131,16 @@ impl<S> AgentClient<S> {
     }
 }
 
+/// Attaches a task's span to the trace the controller sent, when this build
+/// can. Without the `otel` feature there is no trace to join and nothing to do.
+#[cfg(feature = "otel")]
+fn adopt_trace(span: &tracing::Span, traceparent: Option<&str>) {
+    crate::otel::adopt(span, traceparent);
+}
+
+#[cfg(not(feature = "otel"))]
+fn adopt_trace(_span: &tracing::Span, _traceparent: Option<&str>) {}
+
 /// Tasks executing across every client in this process.
 ///
 /// One counter rather than one per client: an agent has a single client, and
@@ -334,7 +344,11 @@ where
                 .outbound
                 .send(Message::Pong { nonce })
                 .map_err(|_| ClientError::Disconnected),
-            Message::TaskAssignment { node_id, task } => {
+            Message::TaskAssignment {
+                node_id,
+                task,
+                traceparent,
+            } => {
                 debug!(%task.kind, task_id = %task.id, "task received");
 
                 // Waits only when this node is already running as many tasks
@@ -348,6 +362,16 @@ where
                     .await
                     .map_err(|_| ClientError::Disconnected)?;
 
+                // The work this node is about to do belongs to whatever asked
+                // for it, so the span joins that trace rather than starting one.
+                let span = tracing::info_span!(
+                    "execute",
+                    task_id = %task.id,
+                    kind = %task.kind,
+                    %node_id,
+                );
+                adopt_trace(&span, traceparent.as_deref());
+
                 let store = self.store.clone();
                 let outbound = self.outbound.clone();
                 let task_id = task.id;
@@ -357,7 +381,7 @@ where
                 tokio::spawn(async move {
                     RUNNING.fetch_add(1, Ordering::Relaxed);
                     let outcome = tokio::task::spawn_blocking(move || {
-                        executor::execute(node_id, &task, &store)
+                        span.in_scope(|| executor::execute(node_id, &task, &store))
                     })
                     .await;
                     RUNNING.fetch_sub(1, Ordering::Relaxed);

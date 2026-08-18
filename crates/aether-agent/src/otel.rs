@@ -1,13 +1,11 @@
-//! Exporting traces to an OpenTelemetry collector.
+//! Exporting this node's spans, and joining the trace that sent the work.
 //!
-//! `/metrics` already answers "how much" — bytes moved, tasks run, queue depth.
-//! This answers "what happened to *this* task": which node was chosen, how long
-//! its inputs took to send, how long it then waited. Counters cannot answer
-//! that, because by the time a counter has moved the task it describes is
-//! anonymous.
-//!
-//! Off unless the operator names an endpoint, and behind a feature so a build
-//! that will never point at a collector does not compile an exporter.
+//! Deliberately a near-copy of the controller's module rather than a shared
+//! one. What it contains is how *this binary* composes its subscriber, which
+//! is a per-binary decision; the part that genuinely has to agree between the
+//! two — the `traceparent` on the wire — is a W3C standard and lives in the
+//! protocol. Forty lines of builder are cheaper than a crate that exists only
+//! to hold them.
 
 use std::time::Duration;
 
@@ -21,12 +19,12 @@ use tracing_subscriber::layer::{Layer, SubscriberExt};
 use tracing_subscriber::util::SubscriberInitExt;
 
 /// Name this process reports itself as.
-pub const SERVICE_NAME: &str = "aether-controller";
+pub const SERVICE_NAME: &str = "aether-agent";
 
 /// How long the exporter waits on a collector before giving up on a batch.
 ///
-/// Short on purpose. A controller must not slow down because the thing
-/// watching it is unwell.
+/// A node must not run work more slowly because the thing watching it is
+/// unwell.
 pub const EXPORT_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Tracing could not be set up.
@@ -41,9 +39,6 @@ pub enum OtelError {
 }
 
 /// Flushes what has not been exported yet when the process ends.
-///
-/// Without this the last spans of a run — which are usually the interesting
-/// ones, because something just went wrong — are lost at exit.
 pub struct Guard {
     provider: SdkTracerProvider,
 }
@@ -61,17 +56,14 @@ fn log_filter() -> EnvFilter {
     EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"))
 }
 
-/// Trace verbosity, from `AETHERMESH_TRACE`. Separate from `RUST_LOG` on
-/// purpose: quietening the terminal should not stop the export.
+/// Trace verbosity, from `AETHERMESH_TRACE`. Separate from `RUST_LOG` so
+/// quietening the terminal does not silently stop the export.
 fn trace_filter() -> EnvFilter {
     EnvFilter::try_from_env("AETHERMESH_TRACE").unwrap_or_else(|_| EnvFilter::new("info"))
 }
 
 /// Sends spans to an OTLP/HTTP collector at `endpoint`, alongside the usual
 /// logs.
-///
-/// `endpoint` is the collector's trace URL, e.g.
-/// `http://127.0.0.1:4318/v1/traces`.
 pub fn init(endpoint: &str) -> Result<Guard, OtelError> {
     let exporter = SpanExporter::builder()
         .with_http()
@@ -97,13 +89,6 @@ pub fn init(endpoint: &str) -> Result<Guard, OtelError> {
         )
         .build();
 
-    // Two filters, not one. `RUST_LOG` says how noisy the console should be,
-    // and someone who set it to `warn` to quieten a terminal has not asked for
-    // their traces to stop — which is what one shared filter would do, because
-    // an instrumented span is disabled before any layer sees it.
-    // Says how a trace context is written down when it leaves this process.
-    // Without it, `current_traceparent` has nowhere to inject into and every
-    // agent starts a trace of its own.
     opentelemetry::global::set_text_map_propagator(TraceContextPropagator::new());
 
     let layer = tracing_opentelemetry::layer()
@@ -117,25 +102,29 @@ pub fn init(endpoint: &str) -> Result<Guard, OtelError> {
     Ok(Guard { provider })
 }
 
-/// The current span's trace context, in W3C `traceparent` form.
+/// Attaches `span` to the trace the controller sent, if it sent one.
 ///
-/// This is what travels to an agent so its work joins this trace instead of
-/// starting a new one. `None` when nothing is being traced, which is the
-/// normal state of a controller nobody pointed at a collector.
-pub fn current_traceparent() -> Option<String> {
-    use opentelemetry::trace::TraceContextExt as _;
+/// The parent is set rather than a link made: this node running the task is
+/// part of that request, not a separate thing that happens to be related. A
+/// missing or malformed header leaves the span as its own root, because a task
+/// that ran is worth a trace even when nobody can say what asked for it.
+pub fn adopt(span: &tracing::Span, traceparent: Option<&str>) {
     use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
-    let context = tracing::Span::current().context();
-    if !context.span().span_context().is_valid() {
-        return None;
-    }
+    let Some(traceparent) = traceparent else {
+        return;
+    };
 
-    let mut carrier = std::collections::HashMap::new();
-    opentelemetry::global::get_text_map_propagator(|propagator| {
-        propagator.inject_context(&context, &mut carrier)
-    });
-    carrier.remove("traceparent")
+    let carrier =
+        std::collections::HashMap::from([("traceparent".to_string(), traceparent.to_string())]);
+    let context =
+        opentelemetry::global::get_text_map_propagator(|propagator| propagator.extract(&carrier));
+
+    // A header this node cannot make sense of is not a reason to refuse the
+    // work, so the span stays a root and the task runs.
+    if let Err(error) = span.set_parent(context) {
+        tracing::debug!(%error, traceparent, "could not join the controller's trace");
+    }
 }
 
 #[cfg(test)]
@@ -143,10 +132,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn nothing_to_propagate_outside_a_trace() {
-        // No subscriber, so no span is being recorded and there is no context
-        // to hand on. The alternative - inventing one - would produce a trace
-        // per task with nothing joining them.
-        assert_eq!(current_traceparent(), None);
+    fn no_header_leaves_the_span_alone() {
+        // Nothing to assert on the span itself without a subscriber; what is
+        // being pinned is that this does not panic on the ordinary case of a
+        // controller that is not tracing.
+        adopt(&tracing::Span::none(), None);
     }
 }

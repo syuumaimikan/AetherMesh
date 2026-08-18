@@ -12,6 +12,20 @@ use crate::dispatch::{DispatchError, TaskTransport};
 /// How long a node has to answer before the task is given up on.
 pub const DEFAULT_TASK_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// The current span's trace context, for an agent to continue.
+///
+/// `None` without the `otel` feature, which is also what it is when tracing is
+/// compiled in but nobody configured an endpoint.
+#[cfg(feature = "otel")]
+fn traceparent() -> Option<String> {
+    crate::otel::current_traceparent()
+}
+
+#[cfg(not(feature = "otel"))]
+fn traceparent() -> Option<String> {
+    None
+}
+
 /// Sends assignments over the connection the agent registered on.
 #[derive(Clone)]
 pub struct NetworkTransport {
@@ -55,6 +69,7 @@ impl TaskTransport for NetworkTransport {
         let assignment = Message::TaskAssignment {
             node_id,
             task: task.clone(),
+            traceparent: traceparent(),
         };
         if let Err(error) = self.connections.send(node_id, assignment) {
             self.connections.forget(task_id);
@@ -220,7 +235,7 @@ mod tests {
 
         let replier = connections.clone();
         tokio::spawn(async move {
-            let Some(Message::TaskAssignment { node_id, task }) = outbound.recv().await else {
+            let Some(Message::TaskAssignment { node_id, task, .. }) = outbound.recv().await else {
                 return;
             };
             replier.complete(TaskResult::success(

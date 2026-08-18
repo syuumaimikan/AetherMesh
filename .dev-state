@@ -1,11 +1,11 @@
-phase=otel-traces
+phase=otel-propagation
 status=complete
-next=A14b trace context across the protocol, A4-quic, A20-A23
+next=A4-quic, A20-A23, SDK catch-up (workflow/run/stats)
 
 # Working notes for whoever picks this up next. Not documentation — the READMEs
 # and docs/ are. This is the stuff that would otherwise have to be rediscovered.
 
-test counts: 468 default / 521 with tls + cloud-http + otel
+test counts: 468 default / 523 with tls + cloud-http + otel (both crates)
 
 ## Advanced phases
 
@@ -93,6 +93,24 @@ completed:
   locality=1.0 -> 1 node, 36 ms, 1.0x. locality=0.0 -> 4 nodes, 13 ms, 2.7x.
   In A9 that same comparison showed no difference at all, because there was
   never a second task in flight. Docs corrected in three places.
+
+- A14b trace propagation: Message::TaskAssignment carries a W3C traceparent
+  (plain Option<String>, no dep in aether-protocol). Controller injects from
+  the current span; agent gets its own `otel` feature + --otlp-endpoint and
+  sets the execute span's parent from the header.
+
+  Live, one trace across two processes: controller dispatch 1232 us containing
+  agent execute 1043 us -> 190 us is wire + queue. Neither process can report
+  that split alone, which is the whole reason for propagating.
+
+  Degrades quietly on purpose and each path is deliberate: no otel feature ->
+  the field is None and adopt_trace is a no-op; unparseable header -> the span
+  stays a root and the task still runs. Tracing never fails work.
+
+  aether-agent/src/otel.rs is a near-copy of the controller's, on purpose. What
+  it holds is how one binary composes its subscriber; the part that must agree
+  (traceparent) is a W3C string in the protocol. Revisit if a third binary
+  needs it.
 
 - A14 OpenTelemetry (controller side): optional `otel` feature, off by
   default like cloud-http. controller/otel.rs -> OTLP/HTTP **JSON** exporter,

@@ -19,6 +19,15 @@ tls = ["dep:tokio-rustls"]
 wasm = ["dep:aether-wasm", "aether-wasm/wasmi-backend"]
 # Same, on the Cranelift JIT instead of the interpreter.
 wasm-jit = ["dep:aether-wasm", "aether-wasm/wasmtime-backend"]
+# Exports traces to an OpenTelemetry collector over OTLP/HTTP, continuing the
+# trace the controller started. Off by default: a node on a small board should
+# not compile an exporter it will never point at anything.
+otel = [
+    "dep:opentelemetry",
+    "dep:opentelemetry_sdk",
+    "dep:opentelemetry-otlp",
+    "dep:tracing-opentelemetry",
+]
 
 [dependencies]
 aether-core.workspace = true
@@ -27,6 +36,16 @@ aether-wasm = { workspace = true, optional = true }
 anyhow.workspace = true
 blake3.workspace = true
 clap = { workspace = true, features = ["derive", "env"] }
+opentelemetry = { version = "0.32", optional = true }
+opentelemetry-otlp = { version = "0.32", default-features = false, features = [
+    "http-json",
+    # Blocking, not async: the batch processor owns a thread with no reactor,
+    # and an async client there sends nothing and says nothing.
+    "reqwest-blocking-client",
+    "internal-logs",
+    "trace",
+], optional = true }
+opentelemetry_sdk = { version = "0.32", features = ["rt-tokio"], optional = true }
 serde = { workspace = true, features = ["derive"] }
 sysinfo = { version = "0.36.1", default-features = false, features = ["system"] }
 thiserror.workspace = true
@@ -41,7 +60,8 @@ tokio = { workspace = true, features = [
 tokio-rustls = { workspace = true, optional = true }
 toml.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
+tracing-opentelemetry = { version = "0.33", optional = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [dev-dependencies]
 aether-controller.workspace = true

@@ -35,6 +35,12 @@ from 0.1.0 onward. Until then, `main` is the release.
   and the span breakdown attributes 20 of those 21 ms to moving the data.
   `RUST_LOG` and `AETHERMESH_TRACE` are separate knobs. Off by default, and
   the dependency is not compiled unless the feature is on.
+- **The trace follows the task onto the node that runs it.** `TaskAssignment`
+  carries a W3C `traceparent`, and an agent built with `--features otel` joins
+  that trace rather than starting its own. Measured: a `dispatch` of 1232 us
+  containing an `execute` of 1043 us, so 190 us was wire and queue — a split
+  neither process can report alone. An agent without the feature ignores the
+  header, and a header it cannot parse still runs the task.
 - **An agent survives its controller.** It used to exit when the connection
   dropped, so restarting a controller cost you every node in the mesh. It now
   reconnects with a doubling backoff up to `reconnect_max_secs` (30s default;
