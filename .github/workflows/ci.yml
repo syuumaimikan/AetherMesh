@@ -31,6 +31,12 @@ jobs:
       - name: TLS and cloud adapters
         run: cargo test --workspace --features aether-controller/tls,aether-agent/tls,aether-cloud/cloud-http
 
+      # Tracing is behind a feature, so nothing else in CI compiles it. A
+      # feature that only builds on the machine of whoever added it is a
+      # feature that breaks quietly.
+      - name: OpenTelemetry export
+        run: cargo test --workspace --features aether-controller/otel,aether-agent/otel
+
       - name: WebAssembly JIT backend
         run: cargo test -p aether-wasm --no-default-features --features wasmtime-backend
 
@@ -152,7 +158,13 @@ jobs:
       # -Werror, because the SDK is two files and there is no excuse for a
       # warning to survive in them.
       - name: Java SDK compiles
-        run: javac -Xlint:all -Werror -d /tmp/aethermesh-java sdk/java/src/main/java/dev/aethermesh/*.java sdk/java/examples/HashExample.java
+        run: javac -Xlint:all -Werror -d /tmp/aethermesh-java sdk/java/src/main/java/dev/aethermesh/*.java sdk/java/examples/*.java
 
       - name: .NET SDK builds
         run: dotnet build sdk/dotnet/AetherMesh --nologo -warnaserror
+
+      # The examples are what prove the SDK matches the client API, so they
+      # have to compile too - an example that stopped building is an API that
+      # changed under somebody.
+      - name: .NET examples build
+        run: dotnet build sdk/dotnet/Examples/CheckAll --nologo -warnaserror
