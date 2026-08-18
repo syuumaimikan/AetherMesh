@@ -37,3 +37,8 @@ probe_interval_secs = 60
 # same module. 0 entries turns it off. Failures are never cached.
 result_cache_entries = 1024
 result_cache_ttl_secs = 300
+
+# How long a queued task waits before it counts as one level more urgent.
+# 0 turns promotion off, which makes a low priority a genuine risk of never
+# running at all. Set it only if you mean that.
+queue_aging_secs = 30

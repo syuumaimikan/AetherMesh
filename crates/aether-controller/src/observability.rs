@@ -187,6 +187,74 @@ impl TrafficSnapshot {
     }
 }
 
+/// How much work is waiting, and how long it waited.
+///
+/// The queue lives inside the dispatcher task, like the traffic counters used
+/// to. These are the shared copy, so a dashboard can see a backlog forming
+/// without the dispatcher having to stop and answer.
+#[derive(Debug, Clone, Default)]
+pub struct QueueStats {
+    inner: Arc<QueueCounters>,
+}
+
+#[derive(Debug, Default)]
+struct QueueCounters {
+    depth: AtomicU64,
+    dequeued: AtomicU64,
+    /// Summed wait, in milliseconds, so a mean can be derived without keeping
+    /// every sample.
+    waited_ms: AtomicU64,
+    longest_wait_ms: AtomicU64,
+}
+
+/// A point-in-time copy of the queue counters.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct QueueSnapshot {
+    /// Tasks waiting for a node right now.
+    pub depth: u64,
+    /// Tasks that have left the queue and been dispatched.
+    pub dequeued: u64,
+    /// Mean time a dispatched task spent waiting, in milliseconds.
+    pub mean_wait_ms: f64,
+    /// The longest any task has waited.
+    pub longest_wait_ms: u64,
+}
+
+impl QueueStats {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Records how many tasks are waiting.
+    pub fn set_depth(&self, depth: usize) {
+        self.inner.depth.store(depth as u64, Ordering::Relaxed);
+    }
+
+    /// Records a task leaving the queue after `waited`.
+    pub fn record_dequeued(&self, waited: std::time::Duration) {
+        let waited_ms = waited.as_millis() as u64;
+        self.inner.dequeued.fetch_add(1, Ordering::Relaxed);
+        self.inner.waited_ms.fetch_add(waited_ms, Ordering::Relaxed);
+        self.inner
+            .longest_wait_ms
+            .fetch_max(waited_ms, Ordering::Relaxed);
+    }
+
+    pub fn snapshot(&self) -> QueueSnapshot {
+        let load = |counter: &AtomicU64| counter.load(Ordering::Relaxed);
+        let dequeued = load(&self.inner.dequeued);
+        QueueSnapshot {
+            depth: load(&self.inner.depth),
+            dequeued,
+            mean_wait_ms: match dequeued {
+                0 => 0.0,
+                count => load(&self.inner.waited_ms) as f64 / count as f64,
+            },
+            longest_wait_ms: load(&self.inner.longest_wait_ms),
+        }
+    }
+}
+
 impl MetricsSnapshot {
     /// Prometheus text exposition, ready to serve or log.
     pub fn to_prometheus(&self) -> String {
@@ -311,5 +379,26 @@ mod tests {
         traffic.record_sent(1100, 1000);
 
         assert_eq!(traffic.snapshot().compression_saved_bytes(), 0);
+    }
+
+    #[test]
+    fn queue_depth_and_waits_are_reported() {
+        let queue = QueueStats::new();
+        queue.set_depth(4);
+        queue.record_dequeued(std::time::Duration::from_millis(100));
+        queue.record_dequeued(std::time::Duration::from_millis(300));
+
+        let snapshot = queue.snapshot();
+        assert_eq!(snapshot.depth, 4);
+        assert_eq!(snapshot.dequeued, 2);
+        assert_eq!(snapshot.mean_wait_ms, 200.0);
+        assert_eq!(snapshot.longest_wait_ms, 300);
+    }
+
+    #[test]
+    fn a_queue_nothing_has_left_reports_no_mean_rather_than_a_nan() {
+        let snapshot = QueueStats::new().snapshot();
+        assert_eq!(snapshot.mean_wait_ms, 0.0);
+        assert_eq!(snapshot.longest_wait_ms, 0);
     }
 }

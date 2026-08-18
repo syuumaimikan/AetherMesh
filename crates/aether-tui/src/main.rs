@@ -96,7 +96,12 @@ async fn run(
             match client.as_mut() {
                 Some(connection) => {
                     let reply = connection
-                        .submit(submission.kind, submission.payload, submission.constraints)
+                        .submit(
+                            submission.kind,
+                            submission.payload,
+                            submission.constraints,
+                            submission.priority.to_string(),
+                        )
                         .await;
                     match reply {
                         Ok(response) => app.apply_result(response),
@@ -185,6 +190,8 @@ fn read_key(app: &mut App) -> anyhow::Result<Option<Submission>> {
         Mode::Submitting => Ok(match key.code {
             KeyCode::Esc => app.edit_form(Key::Escape),
             KeyCode::Tab | KeyCode::Down => app.edit_form(Key::Tab),
+            KeyCode::Left => app.edit_form(Key::Left),
+            KeyCode::Right => app.edit_form(Key::Right),
             KeyCode::Enter => app.edit_form(Key::Enter),
             KeyCode::Backspace => app.edit_form(Key::Backspace),
             KeyCode::Char(character) => app.edit_form(Key::Char(character)),

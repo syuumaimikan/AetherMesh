@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use aether_scheduler::DataCatalog;
 
 use crate::connections::Connections;
-use crate::observability::{MeshMetrics, TrafficStats};
+use crate::observability::{MeshMetrics, QueueStats, TrafficStats};
 use crate::registry::NodeRegistry;
 
 /// Registry shared between the accept loop and every connection task.
@@ -25,6 +25,8 @@ pub struct MeshState {
     /// Bytes moved and bytes saved. Hand this to the `Controller` with
     /// `with_traffic_stats` and the client API reports what it is doing.
     pub traffic: TrafficStats,
+    /// How much work is waiting for a node, and how long it waited.
+    pub queue: QueueStats,
     /// How long a node may stay silent before it is evicted.
     ///
     /// The eviction monitor enforces it; registration reports it, so an idle

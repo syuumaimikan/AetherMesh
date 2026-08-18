@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use aether_controller::{
     ClientGateway, Controller, ControllerConfig, DEFAULT_CHECK_INTERVAL, MeshState,
-    NetworkTransport, bind, bind_clients, health, run_dispatcher, serve, serve_clients,
+    NetworkTransport, bind, bind_clients, health, serve, serve_clients,
 };
 use aether_scheduler::AdvancedScheduler;
 use clap::{Parser, Subcommand};
@@ -220,7 +220,18 @@ async fn main() -> anyhow::Result<()> {
             controller = controller.with_result_cache(cache);
         }
         let (gateway, commands) = ClientGateway::new(64);
-        tokio::spawn(run_dispatcher(controller, state.clone(), commands));
+        let queue = aether_controller::Queue::new()
+            .with_aging(Duration::from_secs(config.queue_aging_secs));
+        info!(
+            aging_secs = config.queue_aging_secs,
+            "task queue ready (higher priority first, FIFO within a level)"
+        );
+        tokio::spawn(aether_controller::run_dispatcher_with(
+            controller,
+            state.clone(),
+            commands,
+            queue,
+        ));
 
         let (client_listener, client_addr) = bind_clients(client_addr).await?;
         info!(%client_addr, tls = config.tls_paths().is_some(), "client API listening");

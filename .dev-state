@@ -1,11 +1,11 @@
-phase=advanced-A16
+phase=advanced-A2
 status=complete
-next=A2-priority-queue
+next=A3-queue-policies
 
 # Working notes for whoever picks this up next. Not documentation — the READMEs
 # and docs/ are. This is the stuff that would otherwise have to be rediscovered.
 
-test counts: 312 default / 365 with tls + cloud-http
+test counts: 334 default / 387 with tls + cloud-http
 
 ## Advanced phases
 
@@ -18,8 +18,14 @@ completed:
 - packaging: .github/workflows/release.yml builds all three binaries for
   6 targets on a v* tag. Distro packages (deb/brew/AUR) not done.
 
-next: A2 priority queue — the TUI has no queue panel and no drain/cancel keys
-because none of that exists to be controlled yet
+- A2 priority + queue: aether-core Priority (5 levels), controller queue.rs
+  (linear scan, not a heap — it re-ranks on every pop, which ageing needs),
+  run_dispatcher_with, QueueStats on MeshState, `priority` on Submit, TUI
+  form field + queue panel. Live: 400 background tasks queued 381 deep, a
+  critical submitted 250 ms in finished 57th of 401.
+
+next: A3 queue policies — timeout, max size, rejection policy (Reject /
+DropOldest / DropLowestPriority). The queue is currently unbounded.
 
 not started: A1 real-network bench, A2/A3 priority queue (no queue exists at
 all — submit dispatches immediately), A4 QUIC, A6 cost, A7 spot, A8/A9 DAG,
@@ -63,6 +69,12 @@ A10/A11 autoscale, A12/A13 checkpoint, A14 OTel, A17-A23, A24-A26 bench
 - cloud adapters read platform liveness only; utilisation comes from heartbeats
 
 ## Follow-ups deferred on purpose
+
+- the queue is unbounded and nothing times out in it. That is A3, not an
+  oversight — but do not ship without it.
+- `run_dispatcher` still dispatches one task at a time. The queue makes that
+  survivable rather than fixing it; concurrent dispatch needs Controller to
+  stop being &mut-per-task.
 
 - the 5 SDKs ignore the new NodeSummary fields (address, latency_ms,
   bandwidth, datasets_held, bytes_held, connected) and have no stats() call.

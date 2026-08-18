@@ -56,6 +56,7 @@ impl Client {
         kind: String,
         payload: Vec<u8>,
         constraints: Vec<String>,
+        priority: String,
     ) -> anyhow::Result<ClientResponse> {
         use base64::Engine as _;
         self.request(&ClientRequest::Submit {
@@ -63,6 +64,7 @@ impl Client {
             payload: base64::engine::general_purpose::STANDARD.encode(payload),
             inputs: Vec::new(),
             constraints,
+            priority: Some(priority),
             module: None,
         })
         .await

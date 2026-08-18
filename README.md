@@ -82,6 +82,18 @@ aether-agent --storage-budget-mb 256
 
 Over budget, the least recently used datasets are dropped, and the agent **tells the controller which ones**. That part matters: a catalog that keeps crediting a node with data it threw away keeps sending that node work whose inputs are no longer there. Data already handed to a running task stays alive until the task finishes.
 
+### Urgent work does not wait behind a backlog
+
+Placement decides *where*; a priority queue decides *when*. Five levels, and three rules that fit in a sentence each:
+
+```python
+mesh.run("cpu", payload, priority="critical")     # critical · high · normal · low · background
+```
+
+Higher priority first. Within one priority, the order they arrived. **And waiting counts**: a task gains a level for every 30 seconds it has spent queued, so a stream of critical work delays background work rather than cancelling it. Without that third rule the lowest priority is not a priority, it is a promise that is never kept.
+
+Measured on one node with 400 background tasks arriving at once: the queue reached a depth of 381, and a critical task submitted 250 ms into the flood finished at position 57 — ahead of every one of the ~340 still waiting, behind only the ~56 that had already run.
+
 ### An idle node costs almost nothing to keep
 
 A mesh spends most of its life with nothing to do, and a fixed heartbeat makes that the expensive state: every few seconds, on every machine, a core wakes up to say nothing has changed. So the interval is not fixed. A node running work — or one whose load has visibly moved, even from something the mesh did not start — reports at the configured rate. A node where nothing is happening doubles its gap each time.
@@ -224,7 +236,7 @@ aether-tui --controller 127.0.0.1:7100
  q quit   s send a task   ↑↓ node   +/- poll rate   r refresh   ? help
 ```
 
-A real frame from a real mesh. The **Not moved** panel is the point of the project; the **holds** column is the locality the scheduler is deciding on. Press `s` to send a task and watch where it lands. Details: [`crates/aether-tui`](crates/aether-tui).
+A real frame from a real mesh. Under load the Mesh panel reads `queued 157 · oldest 1.5s`. The **Not moved** panel is the point of the project; the **holds** column is the locality the scheduler is deciding on. Press `s` to send a task and watch where it lands. Details: [`crates/aether-tui`](crates/aether-tui).
 
 ### Or scrape it
 

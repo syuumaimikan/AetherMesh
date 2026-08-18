@@ -9,6 +9,7 @@ pub mod health;
 pub mod network;
 pub mod observability;
 pub mod probe;
+pub mod queue;
 pub mod registry;
 pub mod security;
 pub mod server;
@@ -22,7 +23,7 @@ pub mod tls;
 pub use cache::{ResultCache, WorkKey};
 pub use client::{
     CLIENT_PROTOCOL_VERSION, ClientGateway, ClientRequest, ClientResponse, bind_clients,
-    run_dispatcher, serve_clients,
+    run_dispatcher, run_dispatcher_with, serve_clients,
 };
 pub use config::{ConfigError, ControllerConfig};
 pub use connections::Connections;
@@ -31,6 +32,7 @@ pub use health::{DEFAULT_CHECK_INTERVAL, DEFAULT_HEARTBEAT_TIMEOUT, evict_stale_
 pub use network::{DEFAULT_TASK_TIMEOUT, NetworkTransport};
 pub use observability::{MeshMetrics, MetricsSnapshot};
 pub use probe::{DEFAULT_PROBE_BYTES, DEFAULT_PROBE_INTERVAL, LinkMeasurement};
+pub use queue::{DEFAULT_AGING, Queue, Queued};
 pub use registry::{NodeEntry, NodeRegistry, RegistryError};
 pub use security::{AuthError, SecurityConfig};
 pub use server::{bind, serve};

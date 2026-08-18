@@ -34,6 +34,11 @@ pub struct ControllerConfig {
     /// turns on mutual TLS, so a peer without a certificate never gets as far
     /// as presenting a token.
     pub tls_client_ca_path: Option<PathBuf>,
+    /// Seconds a queued task waits before it counts as one level more urgent.
+    ///
+    /// Zero turns promotion off, which makes a low priority a genuine risk of
+    /// never running at all. Set it only if you mean that.
+    pub queue_aging_secs: u64,
     /// Seconds between metrics log lines. Zero turns them off.
     pub metrics_interval_secs: u64,
     /// Address to serve `/metrics` and `/healthz` on. Omit to serve neither.
@@ -70,6 +75,7 @@ impl Default for ControllerConfig {
             tls_cert_path: None,
             tls_key_path: None,
             tls_client_ca_path: None,
+            queue_aging_secs: crate::queue::DEFAULT_AGING.as_secs(),
             metrics_interval_secs: 60,
             metrics_listen: None,
             probe_interval_secs: 60,

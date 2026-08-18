@@ -10,7 +10,9 @@
 use std::io::ErrorKind;
 use std::net::SocketAddr;
 
-use aether_core::{DataDescriptor, DataId, NodeInfo, Task, TaskResult};
+use std::time::Instant;
+
+use aether_core::{DataDescriptor, DataId, NodeInfo, Priority, Task, TaskResult};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use serde::{Deserialize, Serialize};
@@ -20,6 +22,7 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, info, warn};
 
 use crate::dispatch::{Controller, DispatchError, TaskTransport};
+use crate::queue::Queue;
 use crate::security::SecurityConfig;
 use crate::state::MeshState;
 
@@ -48,6 +51,10 @@ pub enum ClientRequest {
         /// `"nvme"`. Empty means anywhere.
         #[serde(default)]
         constraints: Vec<String>,
+        /// How urgently it wants a node once a backlog forms: `"critical"`,
+        /// `"high"`, `"normal"`, `"low"`, `"background"`. Omitted is normal.
+        #[serde(default)]
+        priority: Option<String>,
         #[serde(default)]
         module: Option<String>,
     },
@@ -89,6 +96,8 @@ pub enum ClientResponse {
         traffic: TrafficSummary,
         /// Registrations, heartbeats, tasks, since the controller started.
         mesh: crate::observability::MetricsSnapshot,
+        /// Work waiting for a node, and how long it has been waiting.
+        queue: crate::observability::QueueSnapshot,
         /// Nodes registered right now, and how many have a live connection.
         nodes: usize,
         nodes_connected: usize,
@@ -249,42 +258,103 @@ impl ClientGateway {
     }
 }
 
-/// Owns the controller and serves client commands one at a time.
+/// Owns the controller and serves client commands.
+///
+/// One task is dispatched at a time, so anything submitted while one is in
+/// flight waits. What waits is not a plain backlog: submissions go through a
+/// [`crate::queue::Queue`], which runs the most urgent one next and promotes
+/// whatever has been waiting longest. Reads — publish, nodes, stats — are
+/// answered immediately and never queue behind work.
 ///
 /// The node list is refreshed from the live mesh before every placement, so a
 /// client never gets scheduled onto a node that just left.
 pub async fn run_dispatcher<S, T>(
-    mut controller: Controller<S, T>,
+    controller: Controller<S, T>,
     state: MeshState,
-    mut commands: mpsc::Receiver<ClientCommand>,
+    commands: mpsc::Receiver<ClientCommand>,
 ) where
     S: aether_scheduler::Scheduler,
     T: TaskTransport + Send,
 {
-    while let Some(command) = commands.recv().await {
-        controller.sync_registry(state.nodes());
+    run_dispatcher_with(controller, state, commands, Queue::new()).await
+}
 
-        match command {
-            ClientCommand::Publish { bytes, reply } => {
-                let descriptor = controller.publish(bytes);
-                let _ = reply.send(descriptor);
+/// Same, with the queue's ageing policy chosen by the caller.
+pub async fn run_dispatcher_with<S, T>(
+    mut controller: Controller<S, T>,
+    state: MeshState,
+    mut commands: mpsc::Receiver<ClientCommand>,
+    mut queue: Queue<oneshot::Sender<Result<TaskResult, DispatchError>>>,
+) where
+    S: aether_scheduler::Scheduler,
+    T: TaskTransport + Send,
+{
+    let mut closed = false;
+
+    loop {
+        // Block only when there is nothing to run. With work waiting, take
+        // whatever else has arrived and rank it against what is already here —
+        // that is the whole point of having a queue rather than a channel.
+        if queue.is_empty() {
+            match commands.recv().await {
+                Some(command) => admit(command, &mut queue, &mut controller, &state),
+                None => return,
             }
-            ClientCommand::Submit { task, reply } => {
-                let result = controller.submit(task).await;
-                let _ = reply.send(result);
+        }
+        while let Ok(command) = commands.try_recv() {
+            admit(command, &mut queue, &mut controller, &state);
+        }
+        if !closed && commands.is_closed() {
+            closed = true;
+        }
+
+        let Some(entry) = queue.pop(Instant::now()) else {
+            // Everything admitted was a read, and the client hung up.
+            if closed {
+                return;
             }
-            ClientCommand::Nodes { reply } => {
-                let nodes = controller
-                    .registry()
-                    .nodes()
-                    .iter()
-                    .map(|info| NodeSummary::in_mesh(info, &state))
-                    .collect();
-                let _ = reply.send(nodes);
-            }
-            ClientCommand::Stats { reply } => {
-                let _ = reply.send(stats(&state));
-            }
+            continue;
+        };
+
+        state.queue.record_dequeued(entry.waited(Instant::now()));
+        controller.sync_registry(state.nodes());
+        let result = controller.submit(entry.task).await;
+        let _ = entry.payload.send(result);
+        state.queue.set_depth(queue.len());
+    }
+}
+
+/// Answers a read immediately; puts a submission in the queue.
+fn admit<S, T>(
+    command: ClientCommand,
+    queue: &mut Queue<oneshot::Sender<Result<TaskResult, DispatchError>>>,
+    controller: &mut Controller<S, T>,
+    state: &MeshState,
+) where
+    S: aether_scheduler::Scheduler,
+    T: TaskTransport + Send,
+{
+    match command {
+        ClientCommand::Submit { task, reply } => {
+            queue.push(task, reply, Instant::now());
+            state.queue.set_depth(queue.len());
+        }
+        ClientCommand::Publish { bytes, reply } => {
+            let _ = reply.send(controller.publish(bytes));
+        }
+        ClientCommand::Nodes { reply } => {
+            // Read from the live mesh, not from the controller's copy of it:
+            // the copy is only refreshed before a placement, and a read should
+            // not have to wait for one to happen.
+            let nodes = state
+                .nodes()
+                .iter()
+                .map(|info| NodeSummary::in_mesh(info, state))
+                .collect();
+            let _ = reply.send(nodes);
+        }
+        ClientCommand::Stats { reply } => {
+            let _ = reply.send(stats(state));
         }
     }
 }
@@ -370,6 +440,7 @@ async fn serve_request(request: &ClientRequest, gateway: &ClientGateway) -> Clie
             payload,
             inputs,
             constraints,
+            priority,
             module,
         } => {
             submit(
@@ -377,6 +448,7 @@ async fn serve_request(request: &ClientRequest, gateway: &ClientGateway) -> Clie
                 payload,
                 inputs,
                 constraints,
+                priority.as_deref(),
                 module.as_deref(),
                 gateway,
             )
@@ -410,6 +482,7 @@ async fn submit(
     payload: &str,
     inputs: &[String],
     constraints: &[String],
+    priority: Option<&str>,
     module: Option<&str>,
     gateway: &ClientGateway,
 ) -> Result<ClientResponse, String> {
@@ -424,11 +497,17 @@ async fn submit(
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| error.to_string())?;
 
+    let priority: Priority = priority
+        .unwrap_or_default()
+        .parse()
+        .map_err(|error: aether_core::PriorityParseError| error.to_string())?;
+
     let task = match module {
         Some(module) => Task::wasm(parse_data_id(module)?, payload).with_inputs(inputs),
         None => Task::new(kind, payload).with_inputs(inputs),
     }
-    .with_constraints(constraints);
+    .with_constraints(constraints)
+    .with_priority(priority);
 
     let (reply, answer) = oneshot::channel();
     gateway.send(ClientCommand::Submit { task, reply }).await?;
@@ -482,6 +561,7 @@ fn stats(state: &MeshState) -> ClientResponse {
     ClientResponse::Stats {
         traffic: state.traffic.snapshot().into(),
         mesh: state.metrics.snapshot(),
+        queue: state.queue.snapshot(),
         nodes: nodes.len(),
         nodes_connected,
         datasets,
@@ -609,6 +689,7 @@ mod tests {
                 payload: BASE64.encode(b"hello"),
                 inputs: Vec::new(),
                 constraints: Vec::new(),
+                priority: None,
                 module: None,
             },
             &gateway,
@@ -636,6 +717,7 @@ mod tests {
                 payload: String::new(),
                 inputs: Vec::new(),
                 constraints: Vec::new(),
+                priority: None,
                 module: None,
             },
             &gateway,
@@ -656,6 +738,7 @@ mod tests {
                 payload: String::new(),
                 inputs: Vec::new(),
                 constraints: vec!["gpu=true".to_string()],
+                priority: None,
                 module: None,
             },
             &gateway,
@@ -676,6 +759,7 @@ mod tests {
                 payload: String::new(),
                 inputs: Vec::new(),
                 constraints: vec!["=nonsense".to_string()],
+                priority: None,
                 module: None,
             },
             &gateway,
@@ -684,6 +768,182 @@ mod tests {
 
         // Silently dropping it would run the task somewhere it was not allowed.
         assert!(matches!(response, ClientResponse::Error { .. }));
+    }
+
+    /// Records the order tasks were dispatched in, then runs them normally.
+    ///
+    /// The queue's own tests cover the ranking; this covers the wiring — that
+    /// what the dispatcher pops is what actually reaches a node.
+    struct Recording {
+        inner: SimulatedMesh,
+        order: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl TaskTransport for Recording {
+        async fn dispatch(
+            &mut self,
+            node_id: aether_core::NodeId,
+            task: &Task,
+        ) -> Result<TaskResult, DispatchError> {
+            self.order
+                .lock()
+                .expect("order mutex poisoned")
+                .push(task.kind.clone());
+            self.inner.dispatch(node_id, task).await
+        }
+
+        async fn send_data(
+            &mut self,
+            node_id: aether_core::NodeId,
+            descriptor: DataDescriptor,
+            codec: aether_core::Codec,
+            bytes: &[u8],
+        ) -> Result<(), DispatchError> {
+            self.inner
+                .send_data(node_id, descriptor, codec, bytes)
+                .await
+        }
+
+        async fn send_manifest(
+            &mut self,
+            node_id: aether_core::NodeId,
+            manifest: &aether_core::ChunkManifest,
+        ) -> Result<(), DispatchError> {
+            self.inner.send_manifest(node_id, manifest).await
+        }
+
+        async fn send_chunk(
+            &mut self,
+            node_id: aether_core::NodeId,
+            data_id: DataId,
+            index: u32,
+            codec: aether_core::Codec,
+            bytes: &[u8],
+        ) -> Result<(), DispatchError> {
+            self.inner
+                .send_chunk(node_id, data_id, index, codec, bytes)
+                .await
+        }
+    }
+
+    /// Queues every task, then lets the dispatcher run and reports the order.
+    ///
+    /// All of them are in the channel before the dispatcher starts, so the
+    /// first `recv` is followed by a `try_recv` that drains the rest — the
+    /// queue ranks all five against each other and the result is not a race.
+    async fn dispatch_order(tasks: Vec<Task>) -> Vec<String> {
+        let state = MeshState::new();
+        register(&state, "worker");
+        let order = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        let controller = Controller::new(
+            LeastLoadedScheduler::new(),
+            Recording {
+                inner: SimulatedMesh::new(),
+                order: order.clone(),
+            },
+            DataCatalog::new(),
+        );
+
+        let (commands_tx, commands_rx) = mpsc::channel(16);
+        let mut replies = Vec::new();
+        for task in tasks {
+            let (reply, answer) = oneshot::channel();
+            commands_tx
+                .send(ClientCommand::Submit { task, reply })
+                .await
+                .expect("buffered");
+            replies.push(answer);
+        }
+        drop(commands_tx);
+
+        run_dispatcher(controller, state, commands_rx).await;
+        for answer in replies {
+            answer.await.expect("a reply").expect("a result");
+        }
+
+        let dispatched = order.lock().expect("order mutex poisoned");
+        dispatched.clone()
+    }
+
+    #[tokio::test]
+    async fn urgent_work_runs_before_work_that_can_wait() {
+        let order = dispatch_order(vec![
+            Task::new("background", Vec::new()).with_priority(Priority::Background),
+            Task::new("normal", Vec::new()).with_priority(Priority::Normal),
+            Task::new("critical", Vec::new()).with_priority(Priority::Critical),
+            Task::new("low", Vec::new()).with_priority(Priority::Low),
+            Task::new("high", Vec::new()).with_priority(Priority::High),
+        ])
+        .await;
+
+        assert_eq!(
+            order,
+            ["critical", "high", "normal", "low", "background"],
+            "submitted in the least helpful order, run in the right one"
+        );
+    }
+
+    #[tokio::test]
+    async fn equally_urgent_work_runs_in_the_order_it_arrived() {
+        let tasks = (0..5)
+            .map(|index| Task::new(format!("task-{index}"), Vec::new()))
+            .collect();
+
+        assert_eq!(
+            dispatch_order(tasks).await,
+            ["task-0", "task-1", "task-2", "task-3", "task-4"]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_priority_the_controller_does_not_know_is_refused() {
+        let (gateway, state) = gateway();
+        register(&state, "worker");
+
+        let response = serve_request(
+            &ClientRequest::Submit {
+                kind: kind::ECHO.to_string(),
+                payload: String::new(),
+                inputs: Vec::new(),
+                constraints: Vec::new(),
+                priority: Some("urgent".to_string()),
+                module: None,
+            },
+            &gateway,
+        )
+        .await;
+
+        // Guessing what "urgent" meant would run the task at some priority the
+        // caller did not choose.
+        assert!(
+            matches!(response, ClientResponse::Error { .. }),
+            "{response:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_submission_without_a_priority_is_normal() {
+        let (gateway, state) = gateway();
+        register(&state, "worker");
+
+        let response = serve_request(
+            &ClientRequest::Submit {
+                kind: kind::ECHO.to_string(),
+                payload: String::new(),
+                inputs: Vec::new(),
+                constraints: Vec::new(),
+                priority: None,
+                module: None,
+            },
+            &gateway,
+        )
+        .await;
+
+        assert!(
+            matches!(response, ClientResponse::Result { .. }),
+            "{response:?}"
+        );
     }
 
     #[tokio::test]
@@ -719,6 +979,7 @@ mod tests {
                     payload: String::new(),
                     inputs: vec![data_id.clone()],
                     constraints: Vec::new(),
+                    priority: None,
                     module: None,
                 },
                 &gateway,
@@ -789,8 +1050,6 @@ mod tests {
         register(&state, "desktop");
         register(&state, "rpi4");
 
-        // The first command syncs the registry, so ask twice.
-        serve_request(&ClientRequest::Nodes, &gateway).await;
         let response = serve_request(&ClientRequest::Nodes, &gateway).await;
 
         match response {

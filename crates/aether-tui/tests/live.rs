@@ -79,7 +79,12 @@ async fn submitting_from_the_dashboard_runs_the_task_and_moves_the_counters() {
     assert!(app.submitting);
 
     let result = client
-        .submit(submission.kind, submission.payload, submission.constraints)
+        .submit(
+            submission.kind,
+            submission.payload,
+            submission.constraints,
+            submission.priority.to_string(),
+        )
         .await
         .unwrap();
     app.apply_result(result);
@@ -100,7 +105,12 @@ async fn a_task_no_node_satisfies_is_reported_rather_than_silently_dropped() {
     let submission = app.edit_form(Key::Enter).expect("a valid form");
 
     let result = client
-        .submit(submission.kind, submission.payload, submission.constraints)
+        .submit(
+            submission.kind,
+            submission.payload,
+            submission.constraints,
+            submission.priority.to_string(),
+        )
         .await
         .unwrap();
     app.apply_result(result);

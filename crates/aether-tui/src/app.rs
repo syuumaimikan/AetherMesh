@@ -8,7 +8,8 @@ use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use aether_controller::client::{ClientResponse, NodeSummary, TrafficSummary};
-use aether_controller::observability::MetricsSnapshot;
+use aether_controller::observability::{MetricsSnapshot, QueueSnapshot};
+use aether_core::Priority;
 
 /// Samples kept for the throughput graph.
 pub const HISTORY: usize = 120;
@@ -54,6 +55,7 @@ pub enum Field {
     Kind,
     Payload,
     Constraints,
+    Priority,
 }
 
 impl Field {
@@ -61,7 +63,8 @@ impl Field {
         match self {
             Self::Kind => Self::Payload,
             Self::Payload => Self::Constraints,
-            Self::Constraints => Self::Kind,
+            Self::Constraints => Self::Priority,
+            Self::Priority => Self::Kind,
         }
     }
 }
@@ -72,6 +75,9 @@ pub struct Form {
     pub kind: String,
     pub payload: String,
     pub constraints: String,
+    /// Cycled with left/right rather than typed: there are five of them and
+    /// spelling one wrong should not be possible.
+    pub priority: Priority,
     pub focus: Field,
 }
 
@@ -81,6 +87,7 @@ impl Default for Form {
             kind: "echo".to_string(),
             payload: "hello".to_string(),
             constraints: String::new(),
+            priority: Priority::Normal,
             focus: Field::Kind,
         }
     }
@@ -92,7 +99,24 @@ impl Form {
             Field::Kind => &mut self.kind,
             Field::Payload => &mut self.payload,
             Field::Constraints => &mut self.constraints,
+            // Not a text field; left/right move it instead.
+            Field::Priority => &mut self.constraints,
         }
+    }
+
+    /// Moves the priority one level, staying inside the range.
+    pub fn shift_priority(&mut self, up: bool) {
+        let levels = Priority::ALL;
+        let index = levels
+            .iter()
+            .position(|level| *level == self.priority)
+            .unwrap_or(2);
+        let next = if up {
+            (index + 1).min(levels.len() - 1)
+        } else {
+            index.saturating_sub(1)
+        };
+        self.priority = levels[next];
     }
 
     /// The payload bytes this form describes.
@@ -197,6 +221,7 @@ pub struct App {
     pub connection: Connection,
     pub traffic: Option<TrafficSummary>,
     pub mesh: Option<MetricsSnapshot>,
+    pub queue: Option<QueueSnapshot>,
     pub totals: Totals,
     pub nodes: Vec<NodeSummary>,
     pub selected: usize,
@@ -220,6 +245,7 @@ impl App {
             connection: Connection::Connecting,
             traffic: None,
             mesh: None,
+            queue: None,
             totals: Totals::default(),
             nodes: Vec::new(),
             selected: 0,
@@ -239,6 +265,7 @@ impl App {
             ClientResponse::Stats {
                 traffic,
                 mesh,
+                queue,
                 nodes,
                 nodes_connected,
                 datasets,
@@ -247,6 +274,7 @@ impl App {
                 self.throughput.record(traffic.bytes_sent, at);
                 self.traffic = Some(traffic);
                 self.mesh = Some(mesh);
+                self.queue = Some(queue);
                 self.totals = Totals {
                     nodes,
                     nodes_connected,
@@ -385,12 +413,22 @@ impl App {
                 self.form.focus = self.form.focus.next();
                 None
             }
+            Key::Left | Key::Right => {
+                if self.form.focus == Field::Priority {
+                    self.form.shift_priority(matches!(key, Key::Right));
+                }
+                None
+            }
             Key::Backspace => {
-                self.form.field_mut().pop();
+                if self.form.focus != Field::Priority {
+                    self.form.field_mut().pop();
+                }
                 None
             }
             Key::Char(character) => {
-                self.form.field_mut().push(character);
+                if self.form.focus != Field::Priority {
+                    self.form.field_mut().push(character);
+                }
                 None
             }
             Key::Enter => self.finish_form(),
@@ -417,8 +455,12 @@ impl App {
         self.submitting = true;
         self.push_log(
             match constraints.is_empty() {
-                true => format!("submitting {kind}"),
-                false => format!("submitting {kind} where {}", constraints.join(", ")),
+                true => format!("submitting {kind} ({})", self.form.priority),
+                false => format!(
+                    "submitting {kind} ({}) where {}",
+                    self.form.priority,
+                    constraints.join(", ")
+                ),
             },
             LineKind::Info,
         );
@@ -427,6 +469,7 @@ impl App {
             kind,
             payload,
             constraints,
+            priority: self.form.priority,
         })
     }
 }
@@ -437,6 +480,7 @@ pub struct Submission {
     pub kind: String,
     pub payload: Vec<u8>,
     pub constraints: Vec<String>,
+    pub priority: Priority,
 }
 
 /// The keys the form understands, named so the state machine does not depend
@@ -448,6 +492,8 @@ pub enum Key {
     Enter,
     Tab,
     Escape,
+    Left,
+    Right,
 }
 
 /// First segment of a UUID — enough to tell nodes apart on one screen.

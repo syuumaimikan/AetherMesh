@@ -18,4 +18,4 @@ pub use id::{NodeId, TaskId};
 pub use labels::{Constraint, ConstraintParseError, Labels};
 pub use node::{NodeInfo, NodeMetrics};
 pub use store::{DataStore, DataStoreError};
-pub use task::{Task, TaskOutcome, TaskResult};
+pub use task::{Priority, PriorityParseError, Task, TaskOutcome, TaskResult};

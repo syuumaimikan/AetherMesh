@@ -197,20 +197,29 @@ fn counters(frame: &mut Frame, area: Rect, app: &App) {
                 ),
                 ACCENT,
             ),
+            pair(
+                "queued",
+                match app.queue {
+                    // Depth alone does not say whether the backlog is moving,
+                    // so the wait comes with it.
+                    Some(queue) if queue.depth > 0 => format!(
+                        "{} · oldest {:.1}s",
+                        queue.depth,
+                        queue.longest_wait_ms as f64 / 1000.0
+                    ),
+                    Some(_) => "none waiting".to_string(),
+                    None => "—".to_string(),
+                },
+                match app.queue {
+                    Some(queue) if queue.depth > 0 => Color::Yellow,
+                    _ => DIM,
+                },
+            ),
             pair("tasks ok", mesh.tasks_completed.to_string(), GOOD),
             pair(
                 "tasks failed",
                 mesh.tasks_failed.to_string(),
                 if mesh.tasks_failed == 0 { DIM } else { BAD },
-            ),
-            pair(
-                "evicted",
-                mesh.nodes_evicted.to_string(),
-                if mesh.nodes_evicted == 0 {
-                    DIM
-                } else {
-                    Color::Yellow
-                },
             ),
         ]),
         inner,
@@ -336,7 +345,7 @@ fn activity(frame: &mut Frame, area: Rect, app: &App) {
 
 fn keys(frame: &mut Frame, area: Rect, app: &App) {
     let text = match app.mode {
-        Mode::Submitting => " tab field   enter send   esc cancel ",
+        Mode::Submitting => " tab field   ←→ priority   enter send   esc cancel ",
         Mode::Help => " any key closes ",
         Mode::Watching => " q quit   s send a task   ↑↓ node   +/- poll rate   r refresh   ? help ",
     };
@@ -347,11 +356,11 @@ fn keys(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn form(frame: &mut Frame, area: Rect, app: &App) {
-    let popup = centred(area, 60, 9);
+    let popup = centred(area, 60, 11);
     frame.render_widget(Clear, popup);
     let inner = block(frame, popup, " Send a task ");
 
-    let field = |label: &str, value: &str, focused: bool| {
+    let field = |label: &str, value: &str, focused: bool| -> TextLine<'static> {
         let marker = if focused { "▸ " } else { "  " };
         TextLine::from(vec![
             Span::styled(
@@ -382,6 +391,13 @@ fn form(frame: &mut Frame, area: Rect, app: &App) {
                 &app.form.constraints,
                 app.form.focus == Field::Constraints,
             ),
+            // Cycled with ←→ rather than typed: five names, none of them worth
+            // the chance to misspell.
+            field(
+                "priority",
+                &format!("◄ {} ►", app.form.priority),
+                app.form.focus == Field::Priority,
+            ),
             TextLine::from(""),
             TextLine::from(Span::styled(
                 "  echo · hash · cpu (payload is an iteration count)",
@@ -391,13 +407,17 @@ fn form(frame: &mut Frame, area: Rect, app: &App) {
                 "  constraints: gpu=true, region!=us-east, nvme",
                 Style::default().fg(DIM),
             )),
+            TextLine::from(Span::styled(
+                "  priority only matters once a backlog forms",
+                Style::default().fg(DIM),
+            )),
         ]),
         inner,
     );
 }
 
 fn help(frame: &mut Frame, area: Rect) {
-    let popup = centred(area, 64, 14);
+    let popup = centred(area, 64, 18);
     frame.render_widget(Clear, popup);
     let inner = block(frame, popup, " What this shows ");
 
@@ -411,6 +431,10 @@ fn help(frame: &mut Frame, area: Rect) {
             TextLine::from("holds        datasets that node already has. Work reading"),
             TextLine::from("             them costs no transfer, which is the decision"),
             TextLine::from("             the scheduler makes on every task."),
+            TextLine::from(""),
+            TextLine::from("queued       tasks waiting for a node. Priority decides which"),
+            TextLine::from("             runs next; waiting promotes a task a level at a"),
+            TextLine::from("             time, so low priority means later, not never."),
             TextLine::from(""),
             TextLine::from("A node can be registered and not connected: the registry"),
             TextLine::from("keeps it until its heartbeat times out, deliberately."),
@@ -487,6 +511,12 @@ mod tests {
                 mesh: MetricsSnapshot {
                     tasks_completed: 3,
                     ..MetricsSnapshot::default()
+                },
+                queue: aether_controller::observability::QueueSnapshot {
+                    depth: 4,
+                    dequeued: 12,
+                    mean_wait_ms: 180.0,
+                    longest_wait_ms: 2_400,
                 },
                 nodes: 1,
                 nodes_connected: 1,

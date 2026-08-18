@@ -24,6 +24,92 @@ pub mod kind {
     pub const WASM: &str = "wasm";
 }
 
+/// How urgently a task wants a node.
+///
+/// The order matters and is the whole point: `Critical` outranks `High`
+/// outranks `Normal`, and so on down. Anything that does not say gets
+/// `Normal`, so a caller who never heard of priorities is unaffected.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum Priority {
+    /// Runs after everything else, if there is room. Backfill work.
+    Background,
+    Low,
+    #[default]
+    Normal,
+    High,
+    /// Ahead of everything waiting. Reserve it for work that is worth
+    /// delaying other people's.
+    Critical,
+}
+
+impl Priority {
+    /// Every level, lowest first.
+    pub const ALL: [Self; 5] = [
+        Self::Background,
+        Self::Low,
+        Self::Normal,
+        Self::High,
+        Self::Critical,
+    ];
+
+    /// The next level up, or `Critical` if there is none.
+    ///
+    /// This is what waiting buys a task: a queue that only ever ran the
+    /// highest priority would never run the lowest at all.
+    pub fn promoted(self) -> Self {
+        match self {
+            Self::Background => Self::Low,
+            Self::Low => Self::Normal,
+            Self::Normal => Self::High,
+            Self::High | Self::Critical => Self::Critical,
+        }
+    }
+
+    /// The name used on the wire and in a CLI.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Background => "background",
+            Self::Low => "low",
+            Self::Normal => "normal",
+            Self::High => "high",
+            Self::Critical => "critical",
+        }
+    }
+}
+
+impl std::fmt::Display for Priority {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// A priority could not be read from its name.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("`{input}` is not a priority (critical, high, normal, low, background)")]
+pub struct PriorityParseError {
+    pub input: String,
+}
+
+impl std::str::FromStr for Priority {
+    type Err = PriorityParseError;
+
+    fn from_str(input: &str) -> Result<Self, Self::Err> {
+        match input.trim().to_ascii_lowercase().as_str() {
+            "critical" => Ok(Self::Critical),
+            "high" => Ok(Self::High),
+            "normal" | "" => Ok(Self::Normal),
+            "low" => Ok(Self::Low),
+            "background" => Ok(Self::Background),
+            _ => Err(PriorityParseError {
+                input: input.to_string(),
+            }),
+        }
+    }
+}
+
 /// A unit of work.
 ///
 /// `kind` names a built-in operation the agent knows how to run; `payload` is
@@ -35,6 +121,10 @@ pub struct Task {
     pub payload: Vec<u8>,
     /// Datasets this task reads. The scheduler prefers nodes that already hold them.
     pub inputs: Vec<DataId>,
+    /// How urgently this wants a node, once more work is waiting than there
+    /// are nodes to take it.
+    #[serde(default)]
+    pub priority: Priority,
     /// Conditions a node must satisfy to be allowed to run this.
     ///
     /// Load and locality decide where this is cheapest; these decide where it
@@ -55,6 +145,7 @@ impl Task {
             kind: kind.into(),
             payload,
             inputs: Vec::new(),
+            priority: Priority::default(),
             constraints: Vec::new(),
             module: None,
         }
@@ -70,6 +161,7 @@ impl Task {
             kind: kind::WASM.to_string(),
             payload,
             inputs: vec![module],
+            priority: Priority::default(),
             constraints: Vec::new(),
             module: Some(module),
         }
@@ -101,6 +193,12 @@ impl Task {
     /// Adds one condition on top of the existing ones.
     pub fn requiring(mut self, constraint: crate::labels::Constraint) -> Self {
         self.constraints.push(constraint);
+        self
+    }
+
+    /// Sets how urgently this task wants a node.
+    pub fn with_priority(mut self, priority: Priority) -> Self {
+        self.priority = priority;
         self
     }
 
@@ -225,5 +323,57 @@ mod tests {
                 message: "unknown kind".to_string()
             }
         );
+    }
+
+    #[test]
+    fn priorities_order_from_background_up_to_critical() {
+        assert!(Priority::Critical > Priority::High);
+        assert!(Priority::High > Priority::Normal);
+        assert!(Priority::Normal > Priority::Low);
+        assert!(Priority::Low > Priority::Background);
+
+        let mut shuffled = vec![
+            Priority::Normal,
+            Priority::Critical,
+            Priority::Background,
+            Priority::High,
+            Priority::Low,
+        ];
+        shuffled.sort();
+        assert_eq!(shuffled, Priority::ALL);
+    }
+
+    #[test]
+    fn a_task_that_says_nothing_is_normal() {
+        assert_eq!(Task::new("hash", Vec::new()).priority, Priority::Normal);
+        assert_eq!(Priority::default(), Priority::Normal);
+    }
+
+    #[test]
+    fn promotion_climbs_one_level_and_stops_at_the_top() {
+        assert_eq!(Priority::Background.promoted(), Priority::Low);
+        assert_eq!(Priority::Normal.promoted(), Priority::High);
+        assert_eq!(Priority::High.promoted(), Priority::Critical);
+        assert_eq!(Priority::Critical.promoted(), Priority::Critical);
+    }
+
+    #[test]
+    fn priorities_round_trip_through_their_names() {
+        for priority in Priority::ALL {
+            assert_eq!(priority.to_string().parse(), Ok(priority));
+        }
+        assert_eq!("CRITICAL".parse(), Ok(Priority::Critical));
+        assert_eq!("".parse(), Ok(Priority::Normal), "unsaid means normal");
+        assert!("urgent".parse::<Priority>().is_err());
+    }
+
+    #[test]
+    fn an_older_task_without_a_priority_still_deserializes() {
+        // Agents and clients are upgraded separately; a task encoded before
+        // priorities existed has to keep working.
+        let json = r#"{"id":"c8e6f6e0-0000-4000-8000-000000000000","kind":"hash",
+            "payload":[1,2],"inputs":[],"constraints":[],"module":null}"#;
+        let task: Task = serde_json::from_str(json).expect("an older task");
+        assert_eq!(task.priority, Priority::Normal);
     }
 }

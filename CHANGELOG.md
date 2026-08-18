@@ -15,6 +15,12 @@ from 0.1.0 onward. Until then, `main` is the release.
   Constraints filter before any scoring, so a task no node satisfies is
   refused rather than placed somewhere it was not allowed. Carried through the
   client API and all three SDKs.
+- **Task priorities and a queue.** `critical`, `high`, `normal`, `low`,
+  `background`; higher first, FIFO within a level, and a level of promotion for
+  every 30 seconds waited so low priority means later rather than never.
+  Dispatch was strictly first-come, first-served before this — and, since one
+  task is dispatched at a time, a long backlog meant urgent work waited behind
+  all of it.
 - **A terminal dashboard** (`aether-tui`). Throughput, what the mesh did not
   have to move, and which node holds what — plus sending a task from the
   dashboard to watch where it lands. It reconnects on its own and keeps the last
