@@ -61,6 +61,9 @@ base64 = "0.22"
 bincode = "2"
 blake3 = "1"
 clap = "4"
+# OS entropy, nothing else: the `random` capability has to be a real CSPRNG,
+# and this is the smallest way to get one.
+getrandom = "0.3"
 serde = "1"
 thiserror = "2"
 tokio = { version = "1.53", default-features = false }

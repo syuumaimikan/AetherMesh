@@ -72,7 +72,8 @@ pub struct WasmCapabilities {
     /// A clock is a side channel as well as a convenience: it lets a module
     /// tell how long it has been running and behave differently when watched.
     pub clock: bool,
-    /// `aether.random(ptr, len) -> i32` — fill a buffer with random bytes.
+    /// `aether.random(ptr, len) -> i32` — fill a buffer with random bytes from
+    /// the operating system's CSPRNG, so the bytes are safe for keys and nonces.
     ///
     /// Granting this makes tasks non-deterministic, which means a retry on
     /// another node can produce a different answer.
@@ -309,8 +310,12 @@ pub(crate) fn now_unix_millis() -> i64 {
 
 /// Fills a module's buffer with random bytes, for the `random` capability.
 ///
-/// Returns the number of bytes written, or `-1` if the range is not inside the
-/// module's memory.
+/// The bytes come from the operating system's CSPRNG. A module cannot tell
+/// what its output is used for, so a caller generating a key or a nonce has to
+/// be right by default; a cheaper generator here would silently be wrong.
+///
+/// Returns the number of bytes written, `-1` if the range is not inside the
+/// module's memory, and `-2` if the OS refused to provide entropy.
 pub(crate) fn fill_random(memory: &mut [u8], ptr: i32, len: i32) -> i32 {
     let (Ok(ptr), Ok(len)) = (usize::try_from(ptr), usize::try_from(len)) else {
         return -1;
@@ -319,32 +324,14 @@ pub(crate) fn fill_random(memory: &mut [u8], ptr: i32, len: i32) -> i32 {
         return -1;
     };
 
-    // A hash of fresh entropy, stretched: no RNG dependency for a capability
-    // most tasks will never ask for.
-    let mut seed = blake3_seed();
-    for chunk in target.chunks_mut(8) {
-        seed = seed
-            .wrapping_mul(6_364_136_223_846_793_005)
-            .wrapping_add(1_442_695_040_888_963_407);
-        let bytes = seed.to_le_bytes();
-        chunk.copy_from_slice(&bytes[..chunk.len()]);
+    // Failing loudly beats handing back a buffer of zeroes that looks random.
+    match getrandom::fill(target) {
+        Ok(()) => len as i32,
+        Err(error) => {
+            tracing::warn!(%error, "the OS refused entropy for a wasm random call");
+            -2
+        }
     }
-    len as i32
-}
-
-/// Entropy for [`fill_random`]: the clock mixed with an address and a counter.
-fn blake3_seed() -> u64 {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_nanos() as u64)
-        .unwrap_or(0);
-    let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let address = &counter as *const u64 as u64;
-
-    nanos ^ counter.rotate_left(17) ^ address.rotate_left(33)
 }
 
 /// Resolves a module-supplied path inside the granted root.
@@ -504,5 +491,38 @@ mod tests {
             check_output(0, 17, 1024, &limits),
             Err(WasmError::OutputTooLarge { .. })
         ));
+    }
+
+    #[test]
+    fn random_fills_the_requested_range_and_nothing_else() {
+        let mut memory = vec![0u8; 128];
+        assert_eq!(fill_random(&mut memory, 16, 32), 32);
+
+        assert!(
+            memory[16..48].iter().any(|byte| *byte != 0),
+            "32 zero bytes from a CSPRNG is not a plausible draw"
+        );
+        assert!(memory[..16].iter().all(|byte| *byte == 0));
+        assert!(memory[48..].iter().all(|byte| *byte == 0));
+    }
+
+    #[test]
+    fn two_draws_differ() {
+        let mut first = vec![0u8; 32];
+        let mut second = vec![0u8; 32];
+        fill_random(&mut first, 0, 32);
+        fill_random(&mut second, 0, 32);
+
+        // A generator seeded once per process would fail this.
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn a_range_outside_memory_is_refused() {
+        let mut memory = vec![0u8; 32];
+        assert_eq!(fill_random(&mut memory, 24, 16), -1);
+        assert_eq!(fill_random(&mut memory, -1, 4), -1);
+        assert_eq!(fill_random(&mut memory, 0, -4), -1);
+        assert!(memory.iter().all(|byte| *byte == 0));
     }
 }

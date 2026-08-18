@@ -86,9 +86,11 @@ A module that imports something it was not granted fails to instantiate. It
 does not get a stub that quietly returns zero, because silence is how a
 sandbox escape gets missed.
 
-**`random` is not a CSPRNG.** It is documented as unsuitable for keys, nonces,
-or anything that must be unguessable. If a module needs cryptographic
-randomness, it should carry its own entropy in its input.
+**`random` draws from the operating system's CSPRNG** (`getrandom`), so its
+bytes are suitable for keys and nonces. A module cannot see what its caller
+does with the buffer it filled, so the weaker generator this used to have was
+a trap: it looked random and was not. If the OS refuses entropy the call
+returns `-2` rather than a buffer of zeroes.
 
 ## What is deliberately out of scope
 
