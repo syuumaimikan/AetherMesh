@@ -147,7 +147,14 @@ async fn work_continues_after_a_node_disappears() {
 
     assert!(result.is_success(), "task failed: {result:?}");
     assert_ne!(result.node_id, dead_id);
-    assert!(controller.retries() >= 1);
+    // A closed socket is unambiguous, so the dead node is skipped at selection
+    // rather than dispatched at and retried. The data it was credited with is
+    // gone with it, so the survivor is sent a fresh copy.
+    assert_eq!(controller.retries(), 0);
+    assert!(
+        controller.data_bytes_uncompressed() > 64 * 1024,
+        "the dataset had to be moved again"
+    );
 }
 
 #[tokio::test]

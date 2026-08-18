@@ -118,6 +118,20 @@ pub trait TaskTransport {
             Ok(())
         }
     }
+
+    /// Whether this node can be reached right now.
+    ///
+    /// The registry is refreshed on a timer and heartbeats have a timeout, so
+    /// between a node closing its connection and the health monitor noticing,
+    /// the scheduler will happily pick it. Asking the transport first turns
+    /// that into a skip rather than a failed dispatch and a burnt retry.
+    ///
+    /// The default says yes: a transport with no notion of a connection — a
+    /// simulated mesh, a test double — has nothing useful to report.
+    fn is_available(&self, node_id: NodeId) -> bool {
+        let _ = node_id;
+        true
+    }
 }
 
 /// Whether another node is worth trying.
@@ -320,7 +334,7 @@ impl<S: Scheduler, T: TaskTransport + Send> Controller<S, T> {
                 .registry
                 .nodes()
                 .into_iter()
-                .filter(|node| !unusable.contains(&node.id))
+                .filter(|node| !unusable.contains(&node.id) && self.transport.is_available(node.id))
                 .collect();
 
             let node_id = self

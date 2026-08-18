@@ -262,6 +262,38 @@ async fn an_input_is_transferred_once_and_reused_by_later_tasks() {
 }
 
 #[tokio::test]
+async fn a_node_that_hung_up_is_skipped_rather_than_tried_and_failed() {
+    let harness = Harness::start().await;
+    let (gone, handle) = harness.attach_agent_handle("gone").await;
+    let alive = harness.attach_agent("alive").await;
+
+    handle.abort();
+    harness
+        .wait_until(|_| !harness.state.connections.is_connected(gone))
+        .await;
+
+    // The registry still lists the dead node — the health monitor is
+    // deliberately slow, because a late heartbeat is not a death. A closed
+    // socket is not ambiguous, so dispatch should not spend an attempt on it.
+    assert!(harness.state.registry.lock().unwrap().contains(gone));
+
+    let mut controller = harness.controller();
+    controller = controller.with_retry(RetryPolicy::none());
+
+    let result = controller
+        .submit(Task::new(kind::ECHO, b"hi".to_vec()))
+        .await
+        .unwrap();
+
+    assert_eq!(result.node_id, alive);
+    assert_eq!(
+        controller.retries(),
+        0,
+        "no attempt was wasted on the dead node"
+    );
+}
+
+#[tokio::test]
 async fn a_node_over_its_storage_budget_drops_data_and_says_so() {
     let harness = Harness::start().await;
 
@@ -384,26 +416,32 @@ async fn submitting_without_a_connected_agent_fails() {
     let task_id = task.id;
     let error = controller.submit(task).await.unwrap_err();
 
-    // The ghost is set aside on the first failure, and nothing else can run it.
+    // A registered node with no connection is not a candidate, so the task is
+    // refused outright rather than dispatched at a socket that is not there.
     assert_eq!(error, DispatchError::NoNodeAvailable(task_id));
-    assert_eq!(controller.retries(), 1);
+    assert_eq!(controller.retries(), 0, "nothing was attempted");
 }
 
 #[tokio::test]
-async fn an_unreachable_node_fails_immediately_without_retrying() {
+async fn a_node_that_dies_mid_dispatch_is_retried_elsewhere() {
     let harness = Harness::start().await;
-    let mut controller = harness.controller().with_retry(RetryPolicy::none());
-    controller.registry_mut().register(NodeInfo::new(
-        NodeId::generate(),
-        "ghost",
-        "127.0.0.1:9",
-        1,
-    ));
+    let (dying, handle) = harness.attach_agent_handle("dying").await;
+    let alive = harness.attach_agent("alive").await;
 
-    let error = controller
-        .submit(Task::new(kind::ECHO, Vec::new()))
+    // Registered before the abort, so the controller's own view still lists it
+    // as connected — this is the race the retry path exists for, as opposed to
+    // the already-closed case above.
+    let mut controller = harness.controller();
+    handle.abort();
+    harness
+        .wait_until(|_| !harness.state.connections.is_connected(dying))
+        .await;
+
+    let result = controller
+        .submit(Task::new(kind::ECHO, b"hi".to_vec()))
         .await
-        .unwrap_err();
+        .unwrap();
 
-    assert!(matches!(error, DispatchError::Unreachable { .. }));
+    assert_eq!(result.node_id, alive);
+    assert_eq!(result.output(), Some(&b"hi"[..]));
 }

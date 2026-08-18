@@ -71,6 +71,11 @@ from 0.1.0 onward. Until then, `main` is the release.
   unsuitable for keys — but documentation does not travel with the bytes, and
   a module author reaching for it to build a nonce got something predictable
   with no signal that anything was wrong.
+- **A node that hung up is skipped, not dispatched at.** The registry keeps a
+  node until the health monitor times it out — deliberately, since a late
+  heartbeat is not a death — so the scheduler would pick a node whose socket
+  had already closed, fail, and spend a retry discovering it. Dispatch now asks
+  the transport first. A closed socket is not ambiguous.
 - **An agent no longer registers with a fabricated CPU figure.** It sampled CPU
   immediately after constructing the collector, and CPU usage is a difference
   between two samples — on Windows the number came out as 100 %, which kept

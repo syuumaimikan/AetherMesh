@@ -39,6 +39,15 @@ impl NetworkTransport {
 }
 
 impl TaskTransport for NetworkTransport {
+    /// A node with no live control connection is not a candidate.
+    ///
+    /// The registry still lists it until the health monitor times it out, which
+    /// is deliberately slow — a node is not dead just because one heartbeat was
+    /// late. A closed socket is not ambiguous, so it is acted on immediately.
+    fn is_available(&self, node_id: NodeId) -> bool {
+        self.connections.is_connected(node_id)
+    }
+
     async fn dispatch(
         &mut self,
         node_id: NodeId,
