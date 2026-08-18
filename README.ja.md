@@ -244,7 +244,7 @@ cargo run -p aether-benchmark -- compare --tasks 100 --nodes 3 --dataset-bytes 8
 | `aether-wasm` | サンドボックス WASM 実行（既定 `wasmi`、`wasmtime` も選択可） |
 | `aether-cloud` | Kubernetes / AWS / GCP / Azure / ローカルプロセスのアダプタ |
 | `aether-benchmark` | 最適化なしとの比較計測（JSON 出力） |
-| `sdk/{typescript,python,go}` | 依存ゼロのクライアント |
+| `sdk/{typescript,python,go,java,dotnet}` | 依存ゼロのクライアント |
 
 ### クライアントプロトコル
 
@@ -255,7 +255,17 @@ cargo run -p aether-benchmark -- compare --tasks 100 --nodes 3 --dataset-bytes 8
 {"type":"result","success":true,"output":"SEVMTE8=","node_id":"aebf4c04…","duration_ms":2.02}
 ```
 
-メッセージ種別は `hello` / `publish` / `submit` / `nodes` とその応答だけなので、どの言語でも 200 行ほどで実装できます。同梱の 3 つの SDK が、実際それくらいの分量です。
+メッセージ種別は `hello` / `publish` / `submit` / `nodes` とその応答だけなので、どの言語でも 200 行ほどで実装できます。同梱の SDK は、実際どれもそれくらいの分量です。
+
+| SDK | 必要なもの | 備考 |
+|---|---|---|
+| [TypeScript / JavaScript](sdk/typescript) | Node 20+ | 参照実装 |
+| [Python](sdk/python) | 3.10+ | `concurrent.futures` 互換の `MeshExecutor` つき |
+| [Go](sdk/go) | 1.21+ | 標準ライブラリのみ |
+| [Java](sdk/java) | 17+ | 2 ファイル。ビルドツール不要 |
+| [C# / .NET](sdk/dotnet) | 8+ | 全面 `async`、`IAsyncDisposable` |
+
+JSON ライブラリすら使っていません（標準にない言語では自前で書いています）。目的の言語が無ければ、上のプロトコルが仕様のすべてです。
 
 ---
 

@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+
+    <PackageId>AetherMesh.Client</PackageId>
+    <Version>0.1.0</Version>
+    <Description>Client for AetherMesh: publish data once, run tasks and WebAssembly modules across a mesh of machines.</Description>
+    <PackageLicenseExpression>MIT OR Apache-2.0</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/syuumaimikan/AetherMesh</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/syuumaimikan/AetherMesh</RepositoryUrl>
+  </PropertyGroup>
+
+</Project>

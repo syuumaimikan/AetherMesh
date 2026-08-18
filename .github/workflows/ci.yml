@@ -82,9 +82,19 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
 
-      - name: TypeScript SDK parses and type-strips
-        run: node --experimental-strip-types --check sdk/typescript/src/index.ts
+      - name: TypeScript SDK type-checks
+        working-directory: sdk/typescript
+        run: |
+          npm ci
+          npm run typecheck
 
       - name: Go SDK vets and builds
         working-directory: sdk/go
@@ -93,4 +103,12 @@ jobs:
           go build ./...
 
       - name: Python SDK imports
-        run: python -c "import sys; sys.path.insert(0, 'sdk/python'); import aethermesh; print(aethermesh.AetherMesh)"
+        run: python -c "import sys; sys.path.insert(0, 'sdk/python'); import aethermesh; print(aethermesh.AetherMesh, aethermesh.MeshExecutor)"
+
+      # -Werror, because the SDK is two files and there is no excuse for a
+      # warning to survive in them.
+      - name: Java SDK compiles
+        run: javac -Xlint:all -Werror -d /tmp/aethermesh-java sdk/java/src/main/java/dev/aethermesh/*.java sdk/java/examples/HashExample.java
+
+      - name: .NET SDK builds
+        run: dotnet build sdk/dotnet/AetherMesh --nologo -warnaserror

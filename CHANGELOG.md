@@ -15,6 +15,13 @@ from 0.1.0 onward. Until then, `main` is the release.
   Constraints filter before any scoring, so a task no node satisfies is
   refused rather than placed somewhere it was not allowed. Carried through the
   client API and all three SDKs.
+- **Java and C# SDKs**, joining TypeScript, Python, and Go. Neither has a
+  runtime dependency: the Java one parses the protocol's JSON itself rather
+  than putting a dependency-resolution problem between a user and their first
+  task. Both were run against a live mesh, and both are checked in CI.
+- **`MeshExecutor` for Python** — a real `concurrent.futures.Executor`, so code
+  already written against a thread pool moves over by changing the constructor.
+  It refuses a Python callable rather than silently running it locally.
 - **Idle heartbeat backoff.** An idle node doubles the gap between heartbeats
   up to half the controller's eviction window, which the controller now
   declares at registration; work or a real change in load snaps it straight

@@ -19,3 +19,7 @@ __pycache__/
 .aethermesh/
 /examples/**/run/
 uppercase.wasm
+
+# .NET
+bin/
+obj/

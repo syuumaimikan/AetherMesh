@@ -292,15 +292,28 @@ The controller exposes a second listener for clients: four bytes of big-endian l
 {"type":"result","success":true,"output":"SEVMTE8=","node_id":"aebf4c04…","duration_ms":2.02}
 ```
 
-That is a couple of hundred lines in any language with a socket — which is exactly what the three SDKs are. None of them has a runtime dependency.
+That is a couple of hundred lines in any language with a socket — which is exactly what the SDKs are. **None of them has a runtime dependency**, not even a JSON library where the standard library lacks one.
+
+| SDK | Needs | Notes |
+|---|---|---|
+| [TypeScript / JavaScript](sdk/typescript) | Node 20+ | the reference implementation |
+| [Python](sdk/python) | 3.10+ | also a `concurrent.futures` pool — see [`MeshExecutor`](examples/10-executor) |
+| [Go](sdk/go) | 1.21+ | standard library only |
+| [Java](sdk/java) | 17+ | two files, no build tool required |
+| [C# / .NET](sdk/dotnet) | 8+ | `async` throughout, `IAsyncDisposable` |
 
 ```python
 # sdk/python
-from aethermesh import AetherMesh
-
 with AetherMesh.connect(port=7100) as mesh:
     data = mesh.publish(open("input.bin", "rb").read())
     result = mesh.run("hash", b"seed", inputs=[data.data_id])
+```
+
+```ts
+// sdk/typescript
+const mesh = await AetherMesh.connect({ port: 7100, token: process.env.AETHERMESH_TOKEN });
+const dataset = await mesh.publish(bigBuffer);          // moved once, reused after
+const result = await mesh.run("hash", seed, [dataset.dataId]);
 ```
 
 ```go
@@ -310,17 +323,22 @@ data, _ := mesh.Publish(payload)
 result, _ := mesh.Run("hash", []byte("seed"), []string{data.DataID})
 ```
 
-The TypeScript SDK ([`sdk/typescript`](sdk/typescript)) is the reference implementation:
-
-```ts
-import { AetherMesh } from "@aethermesh/client";
-
-const mesh = await AetherMesh.connect({ port: 7100, token: process.env.AETHERMESH_TOKEN });
-const dataset = await mesh.publish(bigBuffer);          // moved once, reused after
-const result = await mesh.run("hash", seed, [dataset.dataId]);
-await mesh.nodes();                                      // who is in the mesh right now
-mesh.close();
+```java
+// sdk/java
+try (AetherMesh mesh = AetherMesh.connect(new AetherMesh.Options().port(7100))) {
+    var data = mesh.publish(payload);
+    var result = mesh.run("hash", "seed".getBytes(), List.of(data.dataId()), List.of());
+}
 ```
+
+```csharp
+// sdk/dotnet
+await using var mesh = await MeshClient.ConnectAsync(new MeshOptions { Port = 7100 });
+var data = await mesh.PublishAsync(payload);
+var result = await mesh.RunAsync("hash", "seed"u8.ToArray(), inputs: [data.DataId]);
+```
+
+Your language is not here? The protocol above is the whole specification, and every SDK is a single file you can read in one sitting.
 
 ---
 
