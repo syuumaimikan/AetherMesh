@@ -28,6 +28,13 @@ from 0.1.0 onward. Until then, `main` is the release.
 - **A workflow result says which step it belongs to.** `StepOutcome.step` was
   the position in the reply, so a workflow with a skipped step blamed the
   wrong step for everything after it.
+- **Traces, so you can ask why one task was slow.** A controller built with
+  `--features otel` and started with `--otlp-endpoint` exports OTLP/HTTP JSON
+  spans for placement, input transfer, and dispatch. Measured: four identical
+  tasks over one dataset, where the first took 21 ms and the rest took 1 ms,
+  and the span breakdown attributes 20 of those 21 ms to moving the data.
+  `RUST_LOG` and `AETHERMESH_TRACE` are separate knobs. Off by default, and
+  the dependency is not compiled unless the feature is on.
 - **An agent survives its controller.** It used to exit when the connection
   dropped, so restarting a controller cost you every node in the mesh. It now
   reconnects with a doubling backoff up to `reconnect_max_secs` (30s default;

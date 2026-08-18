@@ -15,6 +15,16 @@ description = "AetherMesh control plane: node registry, dispatch, data catalog, 
 default = []
 # TLS for agent connections, plus self-signed certificate generation.
 tls = ["dep:tokio-rustls", "dep:rcgen"]
+# Exports traces to an OpenTelemetry collector over OTLP/HTTP.
+#
+# Off by default, like the cloud adapters: a mesh of small boards should not
+# compile an exporter it will never point at anything.
+otel = [
+    "dep:opentelemetry",
+    "dep:opentelemetry_sdk",
+    "dep:opentelemetry-otlp",
+    "dep:tracing-opentelemetry",
+]
 
 [dependencies]
 aether-core.workspace = true
@@ -29,6 +39,21 @@ rcgen = { version = "0.14", default-features = false, features = [
     # Needed to sign a client certificate with an existing CA.
     "x509-parser",
 ], optional = true }
+opentelemetry = { version = "0.32", optional = true }
+opentelemetry-otlp = { version = "0.32", default-features = false, features = [
+    # JSON rather than protobuf: the payload is then something an operator can
+    # read, and checking that spans arrive needs no protobuf decoder.
+    "http-json",
+    # Blocking, not async: the batch processor owns a thread of its own, and an
+    # async client there has no reactor to send on — the export silently never
+    # happens. Found by watching a collector receive nothing at all.
+    "reqwest-blocking-client",
+    # So an exporter that cannot reach its collector says so instead of
+    # dropping spans quietly.
+    "internal-logs",
+    "trace",
+], optional = true }
+opentelemetry_sdk = { version = "0.32", features = ["rt-tokio"], optional = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true
@@ -43,7 +68,8 @@ tokio = { workspace = true, features = [
 tokio-rustls = { workspace = true, optional = true }
 toml.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
+tracing-opentelemetry = { version = "0.33", optional = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [dev-dependencies]
 blake3.workspace = true

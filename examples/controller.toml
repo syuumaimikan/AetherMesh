@@ -67,6 +67,13 @@ queue_timeout_secs = 0
 # in the mesh, so this cannot quietly answer with somebody else's results.
 # checkpoint_path = "/var/lib/aethermesh/checkpoints.jsonl"
 
+# Where to send traces, as an OTLP/HTTP endpoint. Unset sends none.
+#
+# Needs a build with `--features otel`. /metrics answers "how much"; this
+# answers "what happened to this one task", which a counter cannot.
+# RUST_LOG controls the console, AETHERMESH_TRACE controls what is exported.
+# otlp_endpoint = "http://127.0.0.1:4318/v1/traces"
+
 # Seconds between autoscaler readings. 0 turns it off, which is the default.
 # It only ever recommends: acting on the recommendation is your decision, or
 # aether-cloud's. A bad reading should cost a log line, not a bill.

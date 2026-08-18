@@ -80,6 +80,13 @@ pub struct ControllerConfig {
     pub result_cache_entries: usize,
     /// Seconds before a cached result is forgotten. Zero means never.
     pub result_cache_ttl_secs: u64,
+    /// OTLP/HTTP endpoint to send traces to, e.g.
+    /// `http://127.0.0.1:4318/v1/traces`. Unset sends none.
+    ///
+    /// Needs a build with the `otel` feature; without it, setting this is a
+    /// warning rather than a silent no-op, because an operator who configured
+    /// tracing and sees none should be told which of the two is missing.
+    pub otlp_endpoint: Option<String>,
     /// File recording which workflow steps finished, so a named run that is
     /// submitted again picks up where it stopped. Unset turns it off.
     ///
@@ -118,6 +125,7 @@ impl Default for ControllerConfig {
             result_cache_entries: 0,
             result_cache_ttl_secs: 0,
             checkpoint_path: None,
+            otlp_endpoint: None,
         }
     }
 }
@@ -225,6 +233,24 @@ impl ControllerConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_otlp_endpoint_is_read_from_the_file() {
+        let path = write(
+            "otel.toml",
+            "otlp_endpoint = \"http://127.0.0.1:4318/v1/traces\"
+",
+        );
+
+        let config = ControllerConfig::load(&path).unwrap();
+
+        assert_eq!(
+            config.otlp_endpoint.as_deref(),
+            Some("http://127.0.0.1:4318/v1/traces")
+        );
+        // Unset is the default, so a build without a collector exports nothing.
+        assert_eq!(ControllerConfig::default().otlp_endpoint, None);
+    }
 
     fn write(name: &str, contents: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("aethermesh-cfg-{}", std::process::id()));

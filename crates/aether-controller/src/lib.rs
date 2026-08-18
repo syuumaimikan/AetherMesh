@@ -12,6 +12,8 @@ pub mod flow;
 pub mod health;
 pub mod network;
 pub mod observability;
+#[cfg(feature = "otel")]
+pub mod otel;
 pub mod probe;
 pub mod queue;
 pub mod registry;

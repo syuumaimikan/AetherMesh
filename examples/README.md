@@ -19,6 +19,7 @@ one terminal, then several, then several machines, then a browser.
 | [`10-executor`](10-executor) | Swapping a Python thread pool for the mesh | Python 3.10+ |
 | [`11-workflow`](11-workflow) | Steps that read each other's output, without moving it | Python 3.10+ |
 | [`12-verify`](12-verify) | Checking this project's claims against your own mesh | Python 3.10+ |
+| [`13-tracing`](13-tracing) | Following one task through the controller with OpenTelemetry | Python 3.10+ |
 
 ## The 30-second version
 

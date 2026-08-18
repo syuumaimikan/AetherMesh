@@ -377,6 +377,18 @@ impl<S: Scheduler, T: TaskTransport + Send + Sync> Controller<S, T> {
     /// A node that cannot take the task is set aside and the task goes to the
     /// next best node, up to [`RetryPolicy::max_attempts`]. A task that *ran*
     /// and failed is returned as-is: rerunning it would just fail again.
+    #[tracing::instrument(
+        name = "submit",
+        skip_all,
+        fields(
+            task_id = %task.id,
+            kind = %task.kind,
+            priority = ?task.priority,
+            inputs = task.inputs.len(),
+            node_id = tracing::field::Empty,
+            attempts = tracing::field::Empty,
+        )
+    )]
     pub async fn submit(&self, task: Task) -> Result<TaskResult, DispatchError> {
         // Identical work has an identical answer, so the cheapest dispatch is
         // the one that does not happen.
@@ -400,6 +412,10 @@ impl<S: Scheduler, T: TaskTransport + Send + Sync> Controller<S, T> {
                 .scheduler
                 .select_node(&nodes, &task)
                 .ok_or(DispatchError::NoNodeAvailable(task.id))?;
+
+            let span = tracing::Span::current();
+            span.record("node_id", tracing::field::display(node_id));
+            span.record("attempts", attempt);
 
             self.begin_on(node_id);
             let attempted = self.try_once(node_id, &task).await;
@@ -463,10 +479,21 @@ impl<S: Scheduler, T: TaskTransport + Send + Sync> Controller<S, T> {
     /// One placement attempt: move the missing inputs, then run the task.
     async fn try_once(&self, node_id: NodeId, task: &Task) -> Result<TaskResult, DispatchError> {
         self.ensure_inputs(node_id, task).await?;
+        self.dispatch_to(node_id, task).await
+    }
+
+    /// The wait for a node to answer, as its own span.
+    #[tracing::instrument(name = "dispatch", skip_all, fields(%node_id, task_id = %task.id))]
+    async fn dispatch_to(&self, node_id: NodeId, task: &Task) -> Result<TaskResult, DispatchError> {
         self.transport.dispatch(node_id, task).await
     }
 
     /// Sends the task's inputs that the node does not have yet.
+    #[tracing::instrument(
+        name = "send_inputs",
+        skip_all,
+        fields(%node_id, inputs = task.inputs.len())
+    )]
     async fn ensure_inputs(&self, node_id: NodeId, task: &Task) -> Result<(), DispatchError> {
         for data_id in &task.inputs {
             if self.reuse_data && self.catalog.holds(*data_id, node_id) {

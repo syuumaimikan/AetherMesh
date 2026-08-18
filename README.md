@@ -293,6 +293,43 @@ to the machines that already had it. The claim is only ever additive — a node
 can say it holds something, never that another node does not — so the worst a
 wrong one costs is a failed task and a re-send.
 
+### Why *this* task was slow
+
+Counters answer "how much": bytes moved, tasks run, queue depth. They cannot
+answer "what happened to this one task", because by the time a counter has
+moved, the task it describes is anonymous. So the controller can export traces:
+
+```bash
+cargo build --release -p aether-controller --features otel
+aether-controller --otlp-endpoint http://127.0.0.1:4318/v1/traces
+```
+
+Four identical tasks over one 4 MiB dataset, measured:
+
+```
+send_inputs     20023 us   dispatch  1090 us   submit  21160 us
+send_inputs         3 us   dispatch   891 us   submit    913 us
+send_inputs         3 us   dispatch  1038 us   submit   1054 us
+```
+
+The first task took twenty times what the others did, and the trace says why
+without anyone having to guess: 20 of its 21 ms were spent moving the dataset
+to the node. After that the data is there, and the same span takes three
+microseconds. A counter would have reported 4 MiB moved and four tasks run —
+true, and no help in working out which task paid for it.
+
+Off unless you name an endpoint, and behind a feature flag so a build for
+small boards does not compile an exporter it will never point anywhere. The
+payload is OTLP/HTTP **JSON**, so any collector works and a twenty-line one is
+enough to check it: [`examples/13-tracing`](examples/13-tracing) has that,
+along with what is *not* here — the spans stop at the controller, because the
+trace context does not yet cross the protocol to the agent.
+
+`RUST_LOG` and `AETHERMESH_TRACE` are separate on purpose. Turning the terminal
+down should not silently stop the export, which is what one shared filter does:
+a span is disabled before any exporter sees it. (Found the direct way — a
+collector receiving nothing at all.)
+
 ### Failures are ordinary
 
 Heartbeats stop → the node is evicted and its data locations are forgotten. A node refuses a task → the task is re-dispatched to the next best node, data and all. A task that *ran* and failed is returned as a result, not retried forever.

@@ -1,11 +1,11 @@
-phase=agent-reconnect
+phase=otel-traces
 status=complete
-next=A4-quic, A14 OTel, A20-A23 (multi-controller)
+next=A14b trace context across the protocol, A4-quic, A20-A23
 
 # Working notes for whoever picks this up next. Not documentation — the READMEs
 # and docs/ are. This is the stuff that would otherwise have to be rediscovered.
 
-test counts: 467 default / 520 with tls + cloud-http
+test counts: 468 default / 521 with tls + cloud-http + otel
 
 ## Advanced phases
 
@@ -93,6 +93,30 @@ completed:
   locality=1.0 -> 1 node, 36 ms, 1.0x. locality=0.0 -> 4 nodes, 13 ms, 2.7x.
   In A9 that same comparison showed no difference at all, because there was
   never a second task in flight. Docs corrected in three places.
+
+- A14 OpenTelemetry (controller side): optional `otel` feature, off by
+  default like cloud-http. controller/otel.rs -> OTLP/HTTP **JSON** exporter,
+  otlp_endpoint config + --otlp-endpoint. Spans: submit (task/kind/priority/
+  node/attempts), send_inputs, dispatch.
+
+  TWO THINGS COST TIME, both silent failures:
+  (1) one EnvFilter for the whole registry. RUST_LOG=warn disabled the spans
+      before any layer saw them, so the collector got nothing. Now the fmt
+      layer takes RUST_LOG and the otel layer takes AETHERMESH_TRACE.
+  (2) feature "reqwest-client" (async) with the batch processor: the processor
+      owns a thread with no reactor, so nothing was ever sent and nothing was
+      logged. reqwest-blocking-client works. internal-logs is on now so the
+      next such failure is not silent.
+
+  JSON not protobuf, so examples/13-tracing/collector.py can be 20 lines and
+  verification needs no external service (master prompt: no external deps).
+
+  Live: 4 identical tasks / one 4 MiB dataset. First submit 21160 us of which
+  send_inputs 20023; the other three 913-1054 us with send_inputs at 3 us.
+  That is the number /metrics cannot produce.
+
+  NOT DONE: trace context does not cross the protocol, so spans stop at the
+  controller. Stated in the example README rather than implied away.
 
 - agent reconnect + DataHeld: the agent no longer exits when the connection
   drops. aether-agent/src/reconnect.rs with_reconnect (doubling 1s -> ceiling,
