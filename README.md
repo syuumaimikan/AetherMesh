@@ -388,7 +388,9 @@ Error: expected 3 node(s) but the mesh has 2; a result measured on a
 different mesh is not the result you asked for
 ```
 
-The report carries the environment it came from — nodes, addresses, measured latency, OS, seed — and says so in the output when every node is on loopback. It also warns when the run measured nothing: repeat a seed against nodes that still hold the data and you get 0 %, with an explanation rather than a mystery.
+Every report ends with the command that reproduces it, seed included, because the seed deliberately is not fixed — the nodes remember what they have been sent, so repeating one measures a mesh that already holds everything. Rerunning that command against a restarted mesh reproduced 80.0 MiB / 4.0 MiB / 95.0 % exactly.
+
+The report also carries the environment it came from — nodes, addresses, measured latency, client CPU count, OS — and says plainly when every node is on loopback. Full procedure, including the three-machine case: [`docs/benchmarks.md`](docs/benchmarks.md).
 
 ### Against a naive dispatcher
 

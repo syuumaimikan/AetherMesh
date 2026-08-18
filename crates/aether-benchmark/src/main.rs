@@ -190,6 +190,7 @@ async fn main() -> anyhow::Result<()> {
             };
             // The file may name the controller; an explicit flag wins.
             let options = NetworkOptions {
+                nodes_config: nodes_config.as_ref().map(|path| path.display().to_string()),
                 controller: match controller.as_str() {
                     DEFAULT_CONTROLLER => expected
                         .controller

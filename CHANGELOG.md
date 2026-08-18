@@ -21,6 +21,11 @@ from 0.1.0 onward. Until then, `main` is the release.
   Dispatch was strictly first-come, first-served before this — and, since one
   task is dispatched at a time, a long backlog meant urgent work waited behind
   all of it.
+- **Benchmark reproducibility.** Every network report ends with the command
+  that produces it again, seed included; records the client's CPU count, OS,
+  and an RFC 3339 timestamp; and `docs/benchmarks.md` documents what has to be
+  true for a rerun to mean anything. Checked by rerunning a report's own
+  command against a restarted mesh and getting the same bytes.
 - **A benchmark that measures a mesh which is actually running**
   (`aether-benchmark network`). Everything before it simulated a mesh in one
   process, where the "bandwidth" was a number somebody typed. This one connects

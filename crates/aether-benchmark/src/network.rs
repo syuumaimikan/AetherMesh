@@ -163,6 +163,8 @@ impl NodesConfig {
 /// What to measure.
 #[derive(Debug, Clone)]
 pub struct NetworkOptions {
+    /// Path of the `nodes.toml` in force, for the reproduction command.
+    pub nodes_config: Option<String>,
     pub controller: String,
     pub token: Option<String>,
     pub tasks: usize,
@@ -170,6 +172,28 @@ pub struct NetworkOptions {
     /// Fixes the datasets, so a run can be repeated exactly — against a mesh
     /// that does not already hold them. See [`fresh_seed`].
     pub seed: u64,
+}
+
+impl NetworkOptions {
+    /// The invocation that produces this measurement again.
+    ///
+    /// The seed is always spelled out. It defaults to something fresh, so a
+    /// report without it in the command would not be reproducible at all.
+    pub fn command(&self) -> String {
+        let mut parts = vec![
+            "cargo run --release -p aether-benchmark -- network".to_string(),
+            format!("--controller {}", self.controller),
+            format!("--tasks {}", self.tasks),
+            format!("--dataset-bytes {}", self.dataset_bytes),
+            format!("--seed {}", self.seed),
+        ];
+        if let Some(path) = &self.nodes_config {
+            parts.push(format!("--nodes-config {path}"));
+        }
+        // The token is deliberately absent. A command line in a published
+        // report is the last place a shared secret should end up.
+        parts.join(" ")
+    }
 }
 
 /// A seed unlikely to collide with a previous run's.
@@ -189,6 +213,7 @@ pub fn fresh_seed() -> u64 {
 impl Default for NetworkOptions {
     fn default() -> Self {
         Self {
+            nodes_config: None,
             controller: "127.0.0.1:7100".to_string(),
             token: None,
             tasks: 20,
@@ -254,15 +279,27 @@ impl From<&NodeSummary> for NodeRecord {
 /// something a reader needs before deciding whether the number applies to them.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Environment {
+    /// UTC, to the second. A reader comparing two reports needs to know which
+    /// came first without decoding an epoch.
     pub measured_at: String,
     pub client_os: String,
     pub client_arch: String,
+    /// Logical CPUs on the machine that ran the benchmark. It submits and
+    /// waits rather than computing, but a client too small to keep up would
+    /// show as slow tasks that were really a slow client.
+    pub client_cpus: usize,
     pub controller: String,
     pub version: String,
     pub nodes: Vec<NodeRecord>,
     /// Whether every node's address is loopback, which is the difference
     /// between a measurement and a demonstration.
     pub loopback_only: bool,
+    /// The invocation that produces this report again.
+    ///
+    /// A reproducible benchmark is one a stranger can rerun, and the shortest
+    /// path to that is a line they can copy. The seed is in it because the
+    /// default is deliberately not fixed.
+    pub command: String,
 }
 
 /// The whole report.
@@ -291,8 +328,13 @@ impl NetworkReport {
         let env = &self.environment;
 
         out.push_str(&format!(
-            "AetherMesh network benchmark\n  {}\n  controller {} · aethermesh {}\n  client {} {}\n",
-            env.measured_at, env.controller, env.version, env.client_os, env.client_arch
+            "AetherMesh network benchmark\n  {}\n  controller {} · aethermesh {}\n  client {} {} · {} cpu\n",
+            env.measured_at,
+            env.controller,
+            env.version,
+            env.client_os,
+            env.client_arch,
+            env.client_cpus
         ));
 
         out.push_str(&format!("\n{} node(s):\n", env.nodes.len()));
@@ -355,6 +397,8 @@ impl NetworkReport {
             "\n  traffic reduction: {:.1} %\n",
             self.reduction_percent
         ));
+
+        out.push_str(&format!("\n  reproduce with:\n    {}\n", env.command));
 
         for warning in &self.warnings {
             out.push_str(&format!("  ! {warning}\n"));
@@ -433,13 +477,17 @@ pub async fn run(
     let nodes = mesh.nodes().await?;
     expected.check(&nodes)?;
     let environment = Environment {
-        measured_at: timestamp(),
+        measured_at: utc_now(),
         client_os: std::env::consts::OS.to_string(),
         client_arch: std::env::consts::ARCH.to_string(),
+        client_cpus: std::thread::available_parallelism()
+            .map(|count| count.get())
+            .unwrap_or(0),
         controller: options.controller.clone(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         loopback_only: nodes.iter().all(|node| is_loopback(&node.address)),
         nodes: nodes.iter().map(NodeRecord::from).collect(),
+        command: options.command(),
     };
 
     // Naive first: it leaves the mesh holding a lot of one-off datasets, and
@@ -587,13 +635,43 @@ fn is_loopback(address: &str) -> bool {
             .is_ok_and(|ip| ip.is_loopback())
 }
 
-/// Seconds since the epoch, as text. Enough to order two reports.
-fn timestamp() -> String {
+/// Now, in UTC, to the second.
+fn utc_now() -> String {
     let seconds = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_secs())
         .unwrap_or(0);
-    format!("unix:{seconds}")
+    utc(seconds)
+}
+
+/// Formats seconds since the epoch as RFC 3339 UTC.
+///
+/// Written out rather than pulled in: a date library is a lot of dependency
+/// for one line of a report, and the calendar has not changed since 1582.
+fn utc(seconds: u64) -> String {
+    let (days, rest) = (seconds / 86_400, seconds % 86_400);
+    let (hour, minute, second) = (rest / 3_600, (rest % 3_600) / 60, rest % 60);
+
+    // Days since 1970-01-01 to a calendar date, by Howard Hinnant's
+    // civil_from_days: shift the epoch to 0000-03-01 so leap days land at the
+    // end of the year and the month arithmetic has no special cases.
+    let shifted = days as i64 + 719_468;
+    let era = shifted.div_euclid(146_097);
+    let day_of_era = shifted.rem_euclid(146_097);
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let shifted_month = (5 * day_of_year + 2) / 153;
+
+    let day = day_of_year - (153 * shifted_month + 2) / 5 + 1;
+    let month = if shifted_month < 10 {
+        shifted_month + 3
+    } else {
+        shifted_month - 9
+    };
+    let year = year_of_era + era * 400 + i64::from(month <= 2);
+
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
 }
 
 #[cfg(test)]
@@ -866,6 +944,76 @@ mod tests {
     }
 
     #[test]
+    fn the_timestamp_is_a_date_a_reader_can_read() {
+        assert_eq!(utc(0), "1970-01-01T00:00:00Z");
+        assert_eq!(utc(1), "1970-01-01T00:00:01Z");
+        assert_eq!(utc(86_399), "1970-01-01T23:59:59Z");
+        assert_eq!(utc(86_400), "1970-01-02T00:00:00Z");
+        assert_eq!(utc(1_000_000_000), "2001-09-09T01:46:40Z");
+        assert_eq!(utc(1_787_032_028), "2026-08-18T05:47:08Z");
+    }
+
+    #[test]
+    fn leap_days_and_century_rules_land_where_they_should() {
+        // 2000 was a leap year, 1900 was not, and 2024-02-29 exists. Every
+        // one of those is a place hand-rolled calendar code goes wrong.
+        assert_eq!(utc(951_782_400), "2000-02-29T00:00:00Z");
+        assert_eq!(utc(951_868_800), "2000-03-01T00:00:00Z");
+        assert_eq!(utc(1_709_164_800), "2024-02-29T00:00:00Z");
+        assert_eq!(utc(1_709_251_200), "2024-03-01T00:00:00Z");
+        assert_eq!(utc(1_735_689_600), "2025-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn every_day_for_a_decade_advances_by_exactly_one() {
+        // A cheap way to catch an off-by-one that only shows up in one month:
+        // walk 3653 days and check the date never repeats or skips.
+        let mut previous = utc(0);
+        for day in 1..3_653u64 {
+            let today = utc(day * 86_400);
+            assert!(today > previous, "{today} came after {previous}");
+            previous = today;
+        }
+        // Ten years is 3652 days: 3650 plus the leap days of 1972 and 1976.
+        assert_eq!(previous, "1980-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn the_report_carries_the_command_that_reproduces_it() {
+        let options = NetworkOptions {
+            nodes_config: Some("bench/nodes.toml".to_string()),
+            controller: "10.0.0.1:7100".to_string(),
+            token: Some("s3cret".to_string()),
+            tasks: 40,
+            dataset_bytes: 8 * 1024 * 1024,
+            seed: 12_345,
+        };
+
+        let command = options.command();
+        assert!(command.contains("--controller 10.0.0.1:7100"), "{command}");
+        assert!(command.contains("--tasks 40"), "{command}");
+        assert!(command.contains("--dataset-bytes 8388608"), "{command}");
+        assert!(
+            command.contains("--nodes-config bench/nodes.toml"),
+            "{command}"
+        );
+        // Without the seed the command is not a reproduction of anything: the
+        // default deliberately changes every run.
+        assert!(command.contains("--seed 12345"), "{command}");
+    }
+
+    #[test]
+    fn a_token_never_reaches_the_reproduction_command() {
+        let options = NetworkOptions {
+            token: Some("s3cret".to_string()),
+            ..NetworkOptions::default()
+        };
+
+        // A published report is the last place a shared secret should be.
+        assert!(!options.command().contains("s3cret"));
+    }
+
+    #[test]
     fn a_report_round_trips_through_json() {
         let report = report_with(vec![node("local", "127.0.0.1:7001")], 1_000, 100);
         let encoded = serde_json::to_string(&report).expect("serialisable");
@@ -895,9 +1043,11 @@ mod tests {
 
         NetworkReport {
             environment: Environment {
-                measured_at: "unix:0".to_string(),
+                measured_at: "1970-01-01T00:00:00Z".to_string(),
                 client_os: "test".to_string(),
                 client_arch: "test".to_string(),
+                client_cpus: 8,
+                command: "cargo run --release -p aether-benchmark -- network".to_string(),
                 controller: "127.0.0.1:7100".to_string(),
                 version: "0.1.0".to_string(),
                 loopback_only: nodes.iter().all(|node| is_loopback(&node.address)),

@@ -83,3 +83,138 @@ things, in Rust, over a small binary protocol. Where it genuinely differs in
 kind rather than degree is data movement — content addressing and the locality
 score mean the "send it once" case is the default rather than something you have
 to know to ask for.
+
+## On real sockets
+
+Everything above runs a mesh inside one process, or two processes on one
+machine. The `network` benchmark connects to a controller that is actually
+running, as an ordinary client, and measures what crossed the wire.
+
+```bash
+cargo build --release -p aether-controller -p aether-agent -p aether-benchmark
+
+./target/release/aether-controller --listen 127.0.0.1:7000 --client-listen 127.0.0.1:7100 &
+./target/release/aether-agent --controller 127.0.0.1:7000 --advertise 127.0.0.1:7001 &
+./target/release/aether-agent --controller 127.0.0.1:7000 \
+  --identity-path ./second.id --advertise 127.0.0.1:7002 &
+
+./target/release/aether-benchmark network --tasks 20 --dataset-bytes 4194304
+```
+
+Two agents on one machine, 16 cores, loopback:
+
+```
+20 tasks over a 4.0 MiB dataset (seed 1787032350104588100)
+
+                         naive    aethermesh
+  bytes sent          80.0 MiB       4.0 MiB
+  wall clock            691 ms         37 ms
+  mean task             1.0 ms        0.8 ms
+  sends skipped              0            19
+
+  traffic reduction: 95.0 %
+```
+
+The naive side publishes a fresh copy per task — different bytes, so a different
+content hash, so nothing deduplicates and no node ever already holds it. That is
+what a system which ships data to code does. AetherMesh publishes once, and 19
+of the 20 tasks found the data already in place. The one that did not is the 5 %
+that remains.
+
+### Reproducing a number exactly
+
+Every report ends with the command that produces it again:
+
+```
+  reproduce with:
+    cargo run --release -p aether-benchmark -- network --controller 127.0.0.1:7100 \
+      --tasks 20 --dataset-bytes 4194304 --seed 1787032350104588100
+```
+
+The seed is in it because the default is deliberately **not** fixed. The nodes
+remember what they have been sent, so running the same seed twice measures a
+mesh that already holds everything — the second run moves no bytes and reports
+0 %. Two conditions have to hold for a rerun to mean anything:
+
+1. **Pass the seed from the report.** Without it you get different datasets.
+2. **Restart the agents first**, or use a seed that has never been run against
+   this mesh. A node that already holds the data is a different starting
+   condition, not a faster one.
+
+The report says so when this happens rather than leaving a zero unexplained:
+
+```
+  ! The baseline moved no bytes, so there is nothing to compare against. The
+    nodes most likely still hold this run's datasets from a previous one -
+    pass a different --seed, or restart the agents.
+```
+
+Checked on this repository: the command above, run against a freshly restarted
+two-agent mesh, reproduced 80.0 MiB / 4.0 MiB / 95.0 % exactly. Wall clock
+differed by 3 % between runs, as wall clock does.
+
+### On more than one machine
+
+Nothing about the benchmark is local. It speaks the client API, so the only
+change is the address:
+
+```bash
+./target/release/aether-benchmark network --controller 192.168.1.10:7100
+```
+
+Declare the mesh you mean to measure and a mismatch is refused rather than
+reported:
+
+```toml
+# bench/nodes.toml
+controller = "192.168.1.10:7100"
+
+[[nodes]]
+name = "desktop"
+hostname = "workstation"
+
+[[nodes]]
+name = "raspberry-pi"
+hostname = "rpi4"
+labels = ["arch=arm64"]
+
+[[nodes]]
+name = "cloud"
+hostname = "vm-eu-west-1"
+labels = ["region=eu-west"]
+```
+
+```
+Error: expected 3 node(s) but the mesh has 2; a result measured on a
+different mesh is not the result you asked for
+```
+
+Publishing a one-node number as a three-node one is the easiest benchmark lie
+there is, and this is the guard against making it by accident.
+
+### What is in a report
+
+`--format json` emits everything a reader needs to decide whether the number
+applies to them:
+
+| Field | Why it is there |
+|---|---|
+| `measured_at` | UTC, so two reports can be ordered |
+| `client_os`, `client_arch`, `client_cpus` | the machine that submitted the work |
+| `environment.nodes[]` | every node's hostname, address, cores, measured latency and link speed, labels |
+| `loopback_only` | whether this measured a network at all |
+| `seed`, `command` | how to run it again |
+| `warnings[]` | reasons to distrust the numbers, in the report rather than a footnote |
+| `baseline_bytes`, `aethermesh_bytes`, `reduction_percent` | the result |
+
+### The number this repository still does not have
+
+**Nobody has run any of this on real hardware over a real network.** Every
+figure on this page, including the one above, comes from one machine talking to
+itself. The transfer saving is real — bytes that do not cross a loopback socket
+would not cross a real one either — but the latency and throughput columns are
+measuring a memory copy.
+
+That gap is now a `nodes.toml` and three machines away rather than a harness
+away, which is as far as it can be closed from here. If you have the machines,
+this is the most valuable contribution the project can receive.
