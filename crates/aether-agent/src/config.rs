@@ -26,6 +26,11 @@ pub struct AgentConfig {
     /// mutual TLS. Both are needed together.
     pub tls_client_cert_path: Option<PathBuf>,
     pub tls_client_key_path: Option<PathBuf>,
+    /// What this machine is: `["gpu=true", "region=eu-west"]`.
+    ///
+    /// Tasks constrain against these, so declaring `gpu=true` on a box without
+    /// a GPU is how you get GPU work scheduled onto a machine that cannot do it.
+    pub labels: Vec<String>,
     /// Link speed toward this node, in bytes per second, if you know it.
     pub bandwidth_bytes_per_sec: Option<u64>,
     /// Extra connections to offer for bulk data. Chunks are spread across them,
@@ -45,6 +50,7 @@ impl Default for AgentConfig {
             tls_server_name: None,
             tls_client_cert_path: None,
             tls_client_key_path: None,
+            labels: Vec::new(),
             bandwidth_bytes_per_sec: None,
             data_channels: 0,
         }
@@ -93,6 +99,11 @@ impl AgentConfig {
             }),
             None => Ok(Self::default()),
         }
+    }
+
+    /// The declared labels, parsed. Malformed entries are dropped.
+    pub fn parsed_labels(&self) -> aether_core::Labels {
+        aether_core::labels::parse_labels(&self.labels)
     }
 
     /// This agent's certificate and key, when both are configured.

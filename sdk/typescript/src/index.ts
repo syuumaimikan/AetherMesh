@@ -55,6 +55,8 @@ export interface NodeSummary {
   cpuCores: number;
   cpuUsage: number;
   memoryUsage: number;
+  /** What the node claims to be: `{ gpu: "true", region: "eu-west" }`. */
+  labels: Record<string, string>;
 }
 
 /** The controller answered with an error, or the connection failed. */
@@ -145,13 +147,18 @@ export class AetherMesh {
    *
    * `inputs` are ids from {@link publish}; the mesh moves them to the chosen
    * node only if that node does not already hold them.
+   *
+   * `constraints` say where the task may run at all — `"gpu=true"`,
+   * `"region!=us-east"`, `"nvme"` (label present). If no node qualifies the
+   * task fails rather than running somewhere it was not allowed.
    */
   async run(
     kind: string,
     payload: Uint8Array = new Uint8Array(),
     inputs: string[] = [],
+    constraints: string[] = [],
   ): Promise<TaskResult> {
-    return this.#submit({ kind, payload, inputs });
+    return this.#submit({ kind, payload, inputs, constraints });
   }
 
   /** Runs a WebAssembly module previously published with {@link publish}. */
@@ -159,8 +166,15 @@ export class AetherMesh {
     moduleId: string,
     payload: Uint8Array = new Uint8Array(),
     inputs: string[] = [],
+    constraints: string[] = [],
   ): Promise<TaskResult> {
-    return this.#submit({ kind: "wasm", payload, inputs, module: moduleId });
+    return this.#submit({
+      kind: "wasm",
+      payload,
+      inputs,
+      constraints,
+      module: moduleId,
+    });
   }
 
   /** Lists the nodes currently in the mesh. */
@@ -173,6 +187,7 @@ export class AetherMesh {
       cpuCores: Number(node.cpu_cores),
       cpuUsage: Number(node.cpu_usage),
       memoryUsage: Number(node.memory_usage),
+      labels: (node.labels as Record<string, string>) ?? {},
     }));
   }
 
@@ -186,6 +201,7 @@ export class AetherMesh {
     kind: string;
     payload: Uint8Array;
     inputs: string[];
+    constraints: string[];
     module?: string;
   }): Promise<TaskResult> {
     const frame = await this.#request({
@@ -193,6 +209,7 @@ export class AetherMesh {
       kind: task.kind,
       payload: Buffer.from(task.payload).toString("base64"),
       inputs: task.inputs,
+      constraints: task.constraints,
       module: task.module ?? null,
     });
     this.#expect(frame, "result");

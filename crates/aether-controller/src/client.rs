@@ -44,6 +44,10 @@ pub enum ClientRequest {
         payload: String,
         #[serde(default)]
         inputs: Vec<String>,
+        /// Where this task is allowed to run: `"gpu=true"`, `"region!=us-east"`,
+        /// `"nvme"`. Empty means anywhere.
+        #[serde(default)]
+        constraints: Vec<String>,
         #[serde(default)]
         module: Option<String>,
     },
@@ -87,6 +91,10 @@ pub struct NodeSummary {
     pub cpu_cores: u32,
     pub cpu_usage: f32,
     pub memory_usage: f32,
+    /// What this node claims to be, so a client can see which constraints it
+    /// could satisfy before submitting anything.
+    #[serde(default)]
+    pub labels: aether_core::Labels,
 }
 
 impl From<&NodeInfo> for NodeSummary {
@@ -97,6 +105,7 @@ impl From<&NodeInfo> for NodeSummary {
             cpu_cores: info.cpu_cores,
             cpu_usage: info.metrics.cpu_usage,
             memory_usage: info.metrics.memory_usage,
+            labels: info.labels.clone(),
         }
     }
 }
@@ -251,8 +260,19 @@ async fn serve_request(request: &ClientRequest, gateway: &ClientGateway) -> Clie
             kind,
             payload,
             inputs,
+            constraints,
             module,
-        } => submit(kind, payload, inputs, module.as_deref(), gateway).await,
+        } => {
+            submit(
+                kind,
+                payload,
+                inputs,
+                constraints,
+                module.as_deref(),
+                gateway,
+            )
+            .await
+        }
         ClientRequest::Nodes => nodes(gateway).await,
     };
 
@@ -279,6 +299,7 @@ async fn submit(
     kind: &str,
     payload: &str,
     inputs: &[String],
+    constraints: &[String],
     module: Option<&str>,
     gateway: &ClientGateway,
 ) -> Result<ClientResponse, String> {
@@ -287,11 +308,17 @@ async fn submit(
         .iter()
         .map(|id| parse_data_id(id))
         .collect::<Result<Vec<_>, _>>()?;
+    let constraints = constraints
+        .iter()
+        .map(|text| text.parse::<aether_core::Constraint>())
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
 
     let task = match module {
         Some(module) => Task::wasm(parse_data_id(module)?, payload).with_inputs(inputs),
         None => Task::new(kind, payload).with_inputs(inputs),
-    };
+    }
+    .with_constraints(constraints);
 
     let (reply, answer) = oneshot::channel();
     gateway.send(ClientCommand::Submit { task, reply }).await?;
@@ -448,6 +475,7 @@ mod tests {
                 kind: kind::ECHO.to_string(),
                 payload: BASE64.encode(b"hello"),
                 inputs: Vec::new(),
+                constraints: Vec::new(),
                 module: None,
             },
             &gateway,
@@ -474,12 +502,54 @@ mod tests {
                 kind: kind::ECHO.to_string(),
                 payload: String::new(),
                 inputs: Vec::new(),
+                constraints: Vec::new(),
                 module: None,
             },
             &gateway,
         )
         .await;
 
+        assert!(matches!(response, ClientResponse::Error { .. }));
+    }
+
+    #[tokio::test]
+    async fn a_constraint_no_node_satisfies_leaves_the_task_unplaced() {
+        let (gateway, state) = gateway();
+        register(&state, "plain-worker");
+
+        let response = serve_request(
+            &ClientRequest::Submit {
+                kind: kind::ECHO.to_string(),
+                payload: String::new(),
+                inputs: Vec::new(),
+                constraints: vec!["gpu=true".to_string()],
+                module: None,
+            },
+            &gateway,
+        )
+        .await;
+
+        assert!(matches!(response, ClientResponse::Error { .. }));
+    }
+
+    #[tokio::test]
+    async fn a_malformed_constraint_is_reported_not_ignored() {
+        let (gateway, state) = gateway();
+        register(&state, "worker");
+
+        let response = serve_request(
+            &ClientRequest::Submit {
+                kind: kind::ECHO.to_string(),
+                payload: String::new(),
+                inputs: Vec::new(),
+                constraints: vec!["=nonsense".to_string()],
+                module: None,
+            },
+            &gateway,
+        )
+        .await;
+
+        // Silently dropping it would run the task somewhere it was not allowed.
         assert!(matches!(response, ClientResponse::Error { .. }));
     }
 

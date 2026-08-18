@@ -50,6 +50,11 @@ struct Args {
     /// Extra connections to offer for bulk data transfer.
     #[arg(long)]
     data_channels: Option<usize>,
+
+    /// Declares what this machine is, as `key=value`. Repeatable:
+    /// `--label gpu=true --label region=eu-west`. Tasks can require these.
+    #[arg(long = "label", value_name = "KEY=VALUE")]
+    labels: Vec<String>,
 }
 
 #[tokio::main]
@@ -83,6 +88,9 @@ async fn main() -> anyhow::Result<()> {
     if let Some(channels) = args.data_channels {
         config.data_channels = channels;
     }
+    // Flags add to the file rather than replacing it: the file says what the
+    // machine is, the flags say what this run of it is.
+    config.labels.extend(args.labels);
 
     // A restarted agent keeps its identity, so the controller sees one node.
     let identity_path = config
@@ -95,11 +103,14 @@ async fn main() -> anyhow::Result<()> {
     if let Some(bandwidth) = config.bandwidth_bytes_per_sec {
         info = info.with_bandwidth(bandwidth);
     }
+    let labels = config.parsed_labels();
+    info = info.with_labels(labels.clone());
     info!(
         %node_id,
         hostname = %info.hostname,
         cores = info.cpu_cores,
         tls = config.tls_ca_path.is_some(),
+        labels = labels.len(),
         "starting agent"
     );
 

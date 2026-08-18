@@ -6,7 +6,19 @@ pub mod locality;
 pub use advanced::{AdvancedScheduler, Score, ScoreWeights};
 pub use locality::DataCatalog;
 
+use aether_core::labels::satisfies_all;
 use aether_core::{NodeId, NodeInfo, Task};
+
+/// The nodes a task is *allowed* to run on.
+///
+/// Every scheduler filters through this before it starts comparing costs: a
+/// constraint is a hard requirement, not a preference, so a node that fails one
+/// is never the cheapest option — it is not an option.
+pub fn eligible<'a>(nodes: &'a [NodeInfo], task: &'a Task) -> impl Iterator<Item = &'a NodeInfo> {
+    nodes
+        .iter()
+        .filter(|node| satisfies_all(&node.labels, &task.constraints))
+}
 
 /// Picks the node a task should run on.
 pub trait Scheduler {
@@ -32,9 +44,8 @@ impl LeastLoadedScheduler {
 }
 
 impl Scheduler for LeastLoadedScheduler {
-    fn select_node(&self, nodes: &[NodeInfo], _task: &Task) -> Option<NodeId> {
-        nodes
-            .iter()
+    fn select_node(&self, nodes: &[NodeInfo], task: &Task) -> Option<NodeId> {
+        eligible(nodes, task)
             .min_by(|a, b| load_order(a, b))
             .map(|node| node.id)
     }
@@ -61,8 +72,7 @@ impl LocalityScheduler {
 
 impl Scheduler for LocalityScheduler {
     fn select_node(&self, nodes: &[NodeInfo], task: &Task) -> Option<NodeId> {
-        nodes
-            .iter()
+        eligible(nodes, task)
             .max_by(|a, b| {
                 let a_local = self.catalog.local_bytes(a.id, &task.inputs);
                 let b_local = self.catalog.local_bytes(b.id, &task.inputs);
@@ -195,6 +205,41 @@ mod tests {
         let selected = LocalityScheduler::new(catalog)
             .select_node(&nodes, &task().with_inputs(vec![input.id]));
         assert_eq!(selected, Some(nodes[1].id));
+    }
+
+    #[test]
+    fn a_constraint_rules_out_a_node_the_load_would_have_picked() {
+        let nodes = vec![
+            node("idle-cpu-box", 0.1, 0.1),
+            node("busy-gpu-box", 0.9, 0.9).with_label("gpu", "true"),
+        ];
+        let task = task().requiring(aether_core::Constraint::equals("gpu", "true"));
+
+        assert_eq!(
+            LeastLoadedScheduler::new().select_node(&nodes, &task),
+            Some(nodes[1].id)
+        );
+        assert_eq!(
+            LocalityScheduler::default().select_node(&nodes, &task),
+            Some(nodes[1].id)
+        );
+    }
+
+    #[test]
+    fn a_task_nothing_qualifies_for_is_not_placed() {
+        let nodes = vec![node("plain", 0.1, 0.1)];
+        let task = task().requiring(aether_core::Constraint::exists("gpu"));
+
+        assert!(
+            LeastLoadedScheduler::new()
+                .select_node(&nodes, &task)
+                .is_none()
+        );
+        assert!(
+            LocalityScheduler::default()
+                .select_node(&nodes, &task)
+                .is_none()
+        );
     }
 
     #[test]

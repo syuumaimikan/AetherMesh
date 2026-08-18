@@ -131,8 +131,7 @@ impl AdvancedScheduler {
 
 impl Scheduler for AdvancedScheduler {
     fn select_node(&self, nodes: &[NodeInfo], task: &Task) -> Option<NodeId> {
-        nodes
-            .iter()
+        crate::eligible(nodes, task)
             .min_by(|a, b| {
                 self.score(a, task)
                     .total()
@@ -274,6 +273,36 @@ mod tests {
         assert_eq!(score.latency_penalty, 0.01);
         assert_eq!(score.locality_bonus, 1.0);
         assert_eq!(score.total(), 0.75 + 0.01 - 1.0);
+    }
+
+    #[test]
+    fn a_constraint_wins_over_every_cost_term() {
+        let catalog = DataCatalog::new();
+        let nodes = vec![
+            node("idle", 0.05),
+            node("busy-eu", 0.95)
+                .with_latency_ms(300.0)
+                .with_label("region", "eu-west"),
+        ];
+        let input = data(7, 100 * 1024 * 1024);
+        catalog.record(input, nodes[0].id);
+
+        let scheduler = AdvancedScheduler::new(catalog);
+        let task = task_with(vec![input.id])
+            .requiring(aether_core::Constraint::equals("region", "eu-west"));
+
+        // Slower, busier, further away, and without the data — but it is the
+        // only node the data is allowed to leave for.
+        assert_eq!(scheduler.select_node(&nodes, &task), Some(nodes[1].id));
+    }
+
+    #[test]
+    fn nothing_qualifying_means_nothing_is_scheduled() {
+        let scheduler = AdvancedScheduler::new(DataCatalog::new());
+        let nodes = vec![node("plain", 0.1)];
+        let task = task_with(vec![]).requiring(aether_core::Constraint::exists("gpu"));
+
+        assert!(scheduler.select_node(&nodes, &task).is_none());
     }
 
     #[test]

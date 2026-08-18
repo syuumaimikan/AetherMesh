@@ -58,6 +58,20 @@ score = compute_cost + transfer_cost + latency_penalty − locality_bonus
 
 Lower wins. Every weight is configurable and the score comes back term by term, so you can see *why* a node was chosen. Three policies ship: `LeastLoadedScheduler`, `LocalityScheduler`, `AdvancedScheduler`.
 
+### Some machines are not interchangeable
+
+Cost decides where work is *cheapest*. Labels decide where it is *allowed*. An agent declares what it is, and a task says what it needs:
+
+```bash
+aether-agent --label gpu=true --label region=eu-west
+```
+
+```python
+mesh.run("hash", payload, constraints=["gpu=true", "region!=us-east"])
+```
+
+`key=value`, `key!=value`, and a bare `key` for "has this label at all". Constraints are a filter, not a preference — a task that nothing satisfies waits and reports it rather than landing on a machine that cannot do the job. This is how you keep GPU work off the CPU boxes and regulated data inside its jurisdiction.
+
 ### Failures are ordinary
 
 Heartbeats stop → the node is evicted and its data locations are forgotten. A node refuses a task → the task is re-dispatched to the next best node, data and all. A task that *ran* and failed is returned as a result, not retried forever.

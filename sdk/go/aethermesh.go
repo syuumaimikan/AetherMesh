@@ -67,6 +67,8 @@ type NodeSummary struct {
 	CPUCores    int
 	CPUUsage    float64
 	MemoryUsage float64
+	// Labels is what the node claims to be: {"gpu": "true", "region": "eu-west"}.
+	Labels map[string]string
 }
 
 // Mesh is a connection to an AetherMesh controller. It is not safe for
@@ -167,13 +169,17 @@ func (m *Mesh) PublishFile(path string) (Published, error) {
 
 // Run runs a built-in task: echo, hash, or cpu. Inputs are ids from Publish;
 // the mesh moves them to the chosen node only if it does not already hold them.
-func (m *Mesh) Run(kind string, payload []byte, inputs []string) (TaskResult, error) {
-	return m.submit(kind, payload, inputs, nil)
+//
+// Constraints say where the task may run at all: "gpu=true", "region!=us-east",
+// or "nvme" for a label that only has to be present. A task no node satisfies
+// returns an error rather than running somewhere it was not allowed.
+func (m *Mesh) Run(kind string, payload []byte, inputs []string, constraints ...string) (TaskResult, error) {
+	return m.submit(kind, payload, inputs, constraints, nil)
 }
 
 // RunWasm runs a WebAssembly module previously published.
-func (m *Mesh) RunWasm(moduleID string, payload []byte, inputs []string) (TaskResult, error) {
-	return m.submit("wasm", payload, inputs, moduleID)
+func (m *Mesh) RunWasm(moduleID string, payload []byte, inputs []string, constraints ...string) (TaskResult, error) {
+	return m.submit("wasm", payload, inputs, constraints, moduleID)
 }
 
 // Nodes lists the nodes currently in the mesh.
@@ -196,21 +202,26 @@ func (m *Mesh) Nodes() ([]NodeSummary, error) {
 			CPUCores:    int(asFloat(node["cpu_cores"])),
 			CPUUsage:    asFloat(node["cpu_usage"]),
 			MemoryUsage: asFloat(node["memory_usage"]),
+			Labels:      asLabels(node["labels"]),
 		})
 	}
 	return nodes, nil
 }
 
-func (m *Mesh) submit(kind string, payload []byte, inputs []string, module any) (TaskResult, error) {
+func (m *Mesh) submit(kind string, payload []byte, inputs, constraints []string, module any) (TaskResult, error) {
 	if inputs == nil {
 		inputs = []string{}
 	}
+	if constraints == nil {
+		constraints = []string{}
+	}
 	response, err := m.request(frame{
-		"type":    "submit",
-		"kind":    kind,
-		"payload": base64.StdEncoding.EncodeToString(payload),
-		"inputs":  inputs,
-		"module":  module,
+		"type":        "submit",
+		"kind":        kind,
+		"payload":     base64.StdEncoding.EncodeToString(payload),
+		"inputs":      inputs,
+		"constraints": constraints,
+		"module":      module,
 	})
 	if err != nil {
 		return TaskResult{}, err
@@ -288,4 +299,13 @@ func asString(value any) string {
 func asFloat(value any) float64 {
 	number, _ := value.(float64)
 	return number
+}
+
+func asLabels(value any) map[string]string {
+	raw, _ := value.(map[string]any)
+	labels := make(map[string]string, len(raw))
+	for key, entry := range raw {
+		labels[key] = asString(entry)
+	}
+	return labels
 }

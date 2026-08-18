@@ -23,7 +23,12 @@
     "scheduler"
   ],
   "scripts": {
+    "typecheck": "tsc --noEmit",
     "example:hash": "node examples/hash.ts",
     "example:wasm": "node examples/wasm.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.9.2"
   }
 }

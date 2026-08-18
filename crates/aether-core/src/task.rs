@@ -35,6 +35,12 @@ pub struct Task {
     pub payload: Vec<u8>,
     /// Datasets this task reads. The scheduler prefers nodes that already hold them.
     pub inputs: Vec<DataId>,
+    /// Conditions a node must satisfy to be allowed to run this.
+    ///
+    /// Load and locality decide where this is cheapest; these decide where it
+    /// is permitted at all.
+    #[serde(default)]
+    pub constraints: Vec<crate::labels::Constraint>,
     /// WebAssembly module to run, for `kind::WASM` tasks.
     ///
     /// The module is published like any other dataset, so it is content-
@@ -49,6 +55,7 @@ impl Task {
             kind: kind.into(),
             payload,
             inputs: Vec::new(),
+            constraints: Vec::new(),
             module: None,
         }
     }
@@ -63,6 +70,7 @@ impl Task {
             kind: kind::WASM.to_string(),
             payload,
             inputs: vec![module],
+            constraints: Vec::new(),
             module: Some(module),
         }
     }
@@ -78,6 +86,21 @@ impl Task {
             }
             _ => inputs,
         };
+        self
+    }
+
+    /// Restricts this task to nodes whose labels satisfy every condition.
+    ///
+    /// If nothing qualifies the task is not placed at all: a task that needs a
+    /// GPU waiting is better than the same task running without one.
+    pub fn with_constraints(mut self, constraints: Vec<crate::labels::Constraint>) -> Self {
+        self.constraints = constraints;
+        self
+    }
+
+    /// Adds one condition on top of the existing ones.
+    pub fn requiring(mut self, constraint: crate::labels::Constraint) -> Self {
+        self.constraints.push(constraint);
         self
     }
 

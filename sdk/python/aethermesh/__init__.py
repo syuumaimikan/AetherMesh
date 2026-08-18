@@ -70,6 +70,7 @@ class NodeSummary:
     cpu_cores: int
     cpu_usage: float
     memory_usage: float
+    labels: dict[str, str]
 
 
 class AetherMesh:
@@ -122,22 +123,28 @@ class AetherMesh:
         kind: str,
         payload: bytes = b"",
         inputs: list[str] | None = None,
+        constraints: list[str] | None = None,
     ) -> TaskResult:
         """Runs a built-in task: ``echo``, ``hash``, or ``cpu``.
 
         ``inputs`` are ids from :meth:`publish`; the mesh moves them to the
         chosen node only if that node does not already hold them.
+
+        ``constraints`` restrict which nodes may run this at all, written as
+        ``"gpu=true"``, ``"region!=us-east"``, or ``"nvme"`` (label present).
+        A task nothing satisfies raises rather than running somewhere wrong.
         """
-        return self._submit(kind, payload, inputs or [], None)
+        return self._submit(kind, payload, inputs or [], constraints or [], None)
 
     def run_wasm(
         self,
         module_id: str,
         payload: bytes = b"",
         inputs: list[str] | None = None,
+        constraints: list[str] | None = None,
     ) -> TaskResult:
         """Runs a WebAssembly module previously published."""
-        return self._submit("wasm", payload, inputs or [], module_id)
+        return self._submit("wasm", payload, inputs or [], constraints or [], module_id)
 
     def nodes(self) -> list[NodeSummary]:
         """Lists the nodes currently in the mesh."""
@@ -150,6 +157,7 @@ class AetherMesh:
                 cpu_cores=int(node["cpu_cores"]),
                 cpu_usage=float(node["cpu_usage"]),
                 memory_usage=float(node["memory_usage"]),
+                labels=dict(node.get("labels") or {}),
             )
             for node in frame["nodes"]
         ]
@@ -177,6 +185,7 @@ class AetherMesh:
         kind: str,
         payload: bytes,
         inputs: list[str],
+        constraints: list[str],
         module: str | None,
     ) -> TaskResult:
         frame = self._request(
@@ -185,6 +194,7 @@ class AetherMesh:
                 "kind": kind,
                 "payload": base64.b64encode(payload).decode(),
                 "inputs": inputs,
+                "constraints": constraints,
                 "module": module,
             }
         )

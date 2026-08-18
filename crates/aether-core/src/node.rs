@@ -57,6 +57,12 @@ pub struct NodeInfo {
     pub bandwidth_bytes_per_sec: Option<u64>,
     /// Round-trip latency to this node in milliseconds. `None` means unknown.
     pub latency_ms: Option<f32>,
+    /// What this machine is: `gpu=true`, `region=eu-west`, `arch=arm64`.
+    ///
+    /// Tasks constrain against these, so a task that needs a GPU never lands on
+    /// a node that has not claimed one.
+    #[serde(default)]
+    pub labels: crate::labels::Labels,
     pub metrics: NodeMetrics,
 }
 
@@ -74,8 +80,21 @@ impl NodeInfo {
             cpu_cores,
             bandwidth_bytes_per_sec: None,
             latency_ms: None,
+            labels: crate::labels::Labels::new(),
             metrics: NodeMetrics::default(),
         }
+    }
+
+    /// Declares what this machine is.
+    pub fn with_labels(mut self, labels: crate::labels::Labels) -> Self {
+        self.labels = labels;
+        self
+    }
+
+    /// Adds one label.
+    pub fn with_label(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.labels.insert(key.into(), value.into());
+        self
     }
 
     /// Declares the link speed toward this node.
