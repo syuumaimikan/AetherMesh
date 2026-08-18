@@ -204,7 +204,7 @@ async fn main() -> anyhow::Result<()> {
     // The client API is what non-Rust callers use: publish data, submit tasks.
     if let Some(client_addr) = config.client_listen {
         let mut controller = Controller::new(
-            AdvancedScheduler::new(state.catalog.clone()),
+            AdvancedScheduler::new(state.catalog.clone()).with_weights(config.scheduler_weights),
             NetworkTransport::new(state.connections.clone()),
             state.catalog.clone(),
         )
@@ -219,6 +219,13 @@ async fn main() -> anyhow::Result<()> {
             );
             controller = controller.with_result_cache(cache);
         }
+        info!(
+            cpu = config.scheduler_weights.cpu,
+            transfer = config.scheduler_weights.transfer,
+            latency = config.scheduler_weights.latency,
+            locality = config.scheduler_weights.locality,
+            "placement weights"
+        );
         let (gateway, commands) = ClientGateway::new(64);
         let queue = config.task_queue();
         info!(

@@ -13,6 +13,7 @@ description = "Schedulers for AetherMesh: least-loaded, data-locality, and a sco
 
 [dependencies]
 aether-core.workspace = true
+serde = { workspace = true, features = ["derive"] }
 
 [lints]
 workspace = true

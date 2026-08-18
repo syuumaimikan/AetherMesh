@@ -56,7 +56,15 @@ Payloads under 4 KiB go raw. Links faster than ~800 Mbps are left alone, because
 score = compute_cost + transfer_cost + latency_penalty − locality_bonus
 ```
 
-Lower wins. Every weight is configurable and the score comes back term by term, so you can see *why* a node was chosen. Three policies ship: `LeastLoadedScheduler`, `LocalityScheduler`, `AdvancedScheduler`.
+Lower wins. The score comes back term by term, so you can see *why* a node was chosen, and every weight is settable in the controller's config:
+
+```toml
+[scheduler_weights]
+locality = 1.0    # high: work follows its data. low: work spreads.
+transfer = 1.0
+```
+
+Three policies ship: `LeastLoadedScheduler`, `LocalityScheduler`, `AdvancedScheduler`.
 
 ### Work that depends on other work stays put
 
@@ -82,7 +90,9 @@ intermediate data moved: 0 bytes
 
 There is no separate rule making that happen. A task's output is kept on the node that produced it and recorded in the same catalog as any published dataset, so the ordinary locality score already prefers that node. **The mechanism that keeps a published dataset still is the one that keeps a computed one still.**
 
-Cycles and dependencies on steps that do not exist are refused before anything runs; a step that fails stops what waits on it and says which steps it skipped. [`examples/11-workflow`](examples/11-workflow).
+Cycles and dependencies on steps that do not exist are refused before anything runs; a step that fails stops what waits on it and says which steps it skipped.
+
+**A workflow runs one step at a time**, including steps that do not depend on each other, so its wall clock is the sum of its steps. Turning the locality weight off does not spread independent branches either — measured, and it changes nothing, because with sequential dispatch there is never any contention to spread. Both are limitations rather than choices. [`examples/11-workflow`](examples/11-workflow).
 
 ### Some machines are not interchangeable
 

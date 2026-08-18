@@ -21,6 +21,12 @@ from 0.1.0 onward. Until then, `main` is the release.
   Dispatch was strictly first-come, first-served before this — and, since one
   task is dispatched at a time, a long backlog meant urgent work waited behind
   all of it.
+- **Placement weights are settable** (`[scheduler_weights]`). The README had
+  claimed they were configurable; they were not reachable from the binary.
+- **Workflow results report where each step ran**, how big its output was,
+  whether each dependency's data was already there, and how many bytes moved
+  to place it — so a workflow's data movement can be read off the result
+  rather than inferred from global counters.
 - **Workflows** — tasks that depend on other tasks, run in dependency order.
   A step's output is kept on the node that produced it and recorded in the same
   catalog as any published dataset, so the existing locality score already

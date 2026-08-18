@@ -57,3 +57,18 @@ queue_rejection = "reject"
 # Seconds a task waits for a node before giving up. 0 means never. A caller
 # can override this per submission with `timeout_ms`.
 queue_timeout_secs = 0
+
+# What each term of the placement score counts for.
+#   score = cpu*cpu_usage + memory*memory_usage + transfer*seconds
+#           + latency*seconds - locality*share_already_here
+#
+# `locality` is the trade-off. High keeps work with its data: fewer bytes move,
+# and a workflow concentrates onto whichever node produced its first result.
+# Low spreads work across machines and moves more bytes. Neither is right for
+# everybody, which is why it is a setting.
+[scheduler_weights]
+cpu = 1.0
+memory = 0.5
+transfer = 1.0
+latency = 1.0
+locality = 1.0

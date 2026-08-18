@@ -56,6 +56,11 @@ pub struct ControllerConfig {
     /// averages — no hostnames, ids, or addresses — but bind it to localhost
     /// or a management interface anyway.
     pub metrics_listen: Option<SocketAddr>,
+    /// What each term of the placement score counts for.
+    ///
+    /// `locality` is the trade-off: high keeps work with its data and on
+    /// fewer machines, low spreads it and moves more bytes.
+    pub scheduler_weights: aether_scheduler::ScoreWeights,
     /// Seconds between link measurements. Zero turns probing off, leaving the
     /// scheduler on whatever latency and bandwidth were configured by hand.
     pub probe_interval_secs: u64,
@@ -90,6 +95,7 @@ impl Default for ControllerConfig {
             queue_rejection: crate::queue::Rejection::default(),
             metrics_interval_secs: 60,
             metrics_listen: None,
+            scheduler_weights: aether_scheduler::ScoreWeights::default(),
             probe_interval_secs: 60,
             probe_bytes: crate::probe::DEFAULT_PROBE_BYTES,
             result_cache_entries: 0,

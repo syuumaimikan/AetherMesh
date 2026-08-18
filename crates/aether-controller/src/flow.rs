@@ -11,7 +11,7 @@
 
 use std::collections::HashMap;
 
-use aether_core::{TaskResult, Workflow, WorkflowError};
+use aether_core::{NodeId, TaskResult, Workflow, WorkflowError};
 use aether_scheduler::Scheduler;
 use tracing::debug;
 
@@ -30,6 +30,27 @@ pub enum FlowError {
     },
 }
 
+/// Where one step ran and what it cost to put it there.
+///
+/// The three things worth knowing about a workflow's data movement, per the
+/// question this answers: how big the intermediate result was, whether its
+/// inputs were already in place, and how many bytes had to move because they
+/// were not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Placement {
+    pub step: usize,
+    pub node_id: NodeId,
+    /// Size of what this step produced, and therefore what the next step
+    /// would have to move if it ran elsewhere.
+    pub output_bytes: u64,
+    /// Dependencies whose output was already on the chosen node.
+    pub inputs_local: usize,
+    /// Dependencies whose output had to be sent there.
+    pub inputs_moved: usize,
+    /// Bytes actually transferred to place this step.
+    pub bytes_moved: u64,
+}
+
 /// What a workflow produced.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FlowResult {
@@ -38,9 +59,38 @@ pub struct FlowResult {
     pub results: Vec<TaskResult>,
     /// Steps that were never attempted because something earlier failed.
     pub skipped: Vec<usize>,
+    /// Where each step ran and what moving its inputs cost.
+    pub placements: Vec<Placement>,
 }
 
 impl FlowResult {
+    /// Bytes that crossed the wire to run this workflow.
+    ///
+    /// The number the whole design is aimed at. Zero means every step found
+    /// its inputs already in place.
+    pub fn bytes_moved(&self) -> u64 {
+        self.placements
+            .iter()
+            .map(|placement| placement.bytes_moved)
+            .sum()
+    }
+
+    /// How many distinct nodes the workflow used.
+    ///
+    /// Reported beside [`FlowResult::bytes_moved`] because the two pull
+    /// against each other: keeping everything on one node moves nothing and
+    /// uses one machine, and there is no setting that is right for everybody.
+    pub fn nodes_used(&self) -> usize {
+        let mut nodes: Vec<NodeId> = self
+            .placements
+            .iter()
+            .map(|placement| placement.node_id)
+            .collect();
+        nodes.sort_unstable();
+        nodes.dedup();
+        nodes.len()
+    }
+
     /// Whether every step ran and succeeded.
     pub fn is_success(&self) -> bool {
         self.skipped.is_empty() && self.results.iter().all(TaskResult::is_success)
@@ -56,6 +106,14 @@ impl FlowResult {
 }
 
 /// Runs every step, each after the ones it depends on.
+///
+/// One step at a time, including steps that do not depend on each other.
+/// That is a real limitation rather than a choice: `Controller::submit` takes
+/// `&mut self`, so running two steps at once needs the controller to stop
+/// being exclusively owned for the length of a dispatch. Until then, a
+/// workflow's wall clock is the sum of its steps, and independent branches
+/// will concentrate on one node because there is never any contention to
+/// spread them.
 ///
 /// A step that fails stops the steps waiting on it: running D on B's output
 /// when B failed produces a confident answer computed from nothing. Branches
@@ -73,6 +131,7 @@ where
     let mut outputs: HashMap<usize, aether_core::DataId> = HashMap::new();
     let mut results: HashMap<usize, TaskResult> = HashMap::new();
     let mut abandoned: Vec<usize> = Vec::new();
+    let mut placements: Vec<Placement> = Vec::new();
 
     for step in order {
         let dependencies = &workflow.steps[step].depends_on;
@@ -101,10 +160,33 @@ where
             }
         }
 
+        // Sampled around this one step, so the cost is attributed to the
+        // step that caused it rather than to the workflow as a whole.
+        let dependency_inputs: Vec<aether_core::DataId> = task
+            .inputs
+            .iter()
+            .filter(|input| outputs.values().any(|output| output == *input))
+            .copied()
+            .collect();
+        let before = controller.data_bytes_uncompressed();
+
         let result = controller
             .submit(task)
             .await
             .map_err(|source| FlowError::Dispatch { step, source })?;
+
+        let local = dependency_inputs
+            .iter()
+            .filter(|input| controller.catalog().holds(**input, result.node_id))
+            .count();
+        placements.push(Placement {
+            step,
+            node_id: result.node_id,
+            output_bytes: result.output().map_or(0, |output| output.len() as u64),
+            inputs_local: local,
+            inputs_moved: dependency_inputs.len() - local,
+            bytes_moved: controller.data_bytes_uncompressed() - before,
+        });
 
         if let Some(output_id) = result.output_id {
             outputs.insert(step, output_id);
@@ -113,11 +195,13 @@ where
     }
 
     abandoned.sort_unstable();
+    placements.sort_unstable_by_key(|placement| placement.step);
     Ok(FlowResult {
         results: (0..workflow.len())
             .filter_map(|step| results.remove(&step))
             .collect(),
         skipped: abandoned,
+        placements,
     })
 }
 
@@ -314,6 +398,78 @@ mod tests {
         assert_eq!(outcome.skipped, [1]);
         assert_eq!(outcome.results.len(), 2);
         assert!(outcome.results.iter().any(|result| result.is_success()));
+    }
+
+    #[tokio::test]
+    async fn a_chain_reports_that_nothing_moved() {
+        let catalog = DataCatalog::new();
+        let mut controller = Controller::new(
+            LocalityScheduler::new(catalog.clone()),
+            SimulatedMesh::with_executor(aether_agent::execute),
+            catalog,
+        );
+        for index in 0..3 {
+            controller.registry_mut().register(NodeInfo::new(
+                NodeId::generate(),
+                format!("node-{index}"),
+                "127.0.0.1:1",
+                4,
+            ));
+        }
+
+        let workflow = Workflow::chain(vec![
+            Task::new(kind::ECHO, vec![9u8; 32 * 1024]),
+            Task::new(kind::HASH, Vec::new()),
+            Task::new(kind::HASH, Vec::new()),
+        ])
+        .unwrap();
+
+        let outcome = run_workflow(&mut controller, &workflow).await.unwrap();
+
+        assert!(outcome.is_success(), "{outcome:?}");
+        assert_eq!(outcome.bytes_moved(), 0, "an intermediate result travelled");
+        // Zero movement and one node are the same fact seen twice, which is
+        // exactly the trade-off worth reporting rather than hiding.
+        assert_eq!(outcome.nodes_used(), 1);
+
+        assert_eq!(outcome.placements.len(), 3);
+        assert_eq!(outcome.placements[0].inputs_moved, 0);
+        assert_eq!(outcome.placements[1].inputs_local, 1);
+        assert_eq!(outcome.placements[2].inputs_local, 1);
+        assert_eq!(outcome.placements[0].output_bytes, 32 * 1024);
+    }
+
+    #[tokio::test]
+    async fn a_placement_names_the_step_it_describes() {
+        let mut controller = controller_with(1);
+        // Written out of order, so a placement indexed by position would be
+        // wrong and a placement carrying its step number would not.
+        let workflow = Workflow::new(vec![
+            Step::after(Task::new(kind::ECHO, b"second".to_vec()), vec![1]),
+            Step::new(Task::new(kind::ECHO, b"first".to_vec())),
+        ])
+        .unwrap();
+
+        let outcome = run_workflow(&mut controller, &workflow).await.unwrap();
+
+        assert_eq!(outcome.placements[0].step, 0);
+        assert_eq!(outcome.placements[1].step, 1);
+        assert_eq!(outcome.placements[0].output_bytes, b"second".len() as u64);
+    }
+
+    #[tokio::test]
+    async fn a_workflow_that_stopped_early_reports_only_what_ran() {
+        let mut controller = controller_with(1);
+        let workflow = Workflow::chain(vec![
+            Task::new("nonsense", Vec::new()),
+            Task::new(kind::HASH, Vec::new()),
+        ])
+        .unwrap();
+
+        let outcome = run_workflow(&mut controller, &workflow).await.unwrap();
+
+        assert_eq!(outcome.placements.len(), 1);
+        assert_eq!(outcome.bytes_moved(), 0);
     }
 
     #[tokio::test]

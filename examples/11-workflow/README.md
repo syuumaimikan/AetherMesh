@@ -61,8 +61,35 @@ A diamond works the same way:
  {"kind": "hash", "depends_on": [1, 2]}]
 ```
 
-Steps 1 and 2 are independent, so they can land on different nodes; step 3 waits
-for both and reads both.
+Steps 1 and 2 are independent and step 3 waits for both, reading both.
+
+In practice they will land on the *same* node, and not because of the locality
+score — see below.
+
+## Why a workflow uses one node
+
+Measured, then measured again with the placement weights turned against it:
+
+```
+default weights (locality = 1.0)     placement: 0->9bb19595 1->9bb19595 2->9bb19595 3->9bb19595
+locality = 0.0, transfer = 0.0       placement: 0->b821ad5e 1->b821ad5e 2->b821ad5e 3->b821ad5e
+```
+
+Turning locality off changes nothing. So the concentration is **not** the
+locality bonus doing its job, which is what it looks like. Two other things
+cause it:
+
+1. **Steps are dispatched one at a time.** `run_workflow` awaits each step
+   before starting the next, so exactly one task is ever in flight. Spreading
+   independent steps across nodes cannot save wall clock when they were never
+   going to overlap. This is a real limitation, not a tuning choice.
+2. **Load metrics lag by a heartbeat.** A node that has just been given work
+   does not look busier until it reports again, so on a homogeneous mesh every
+   node scores identically and the deterministic tie-break picks the same one.
+
+Locality weighting is still what keeps a *chain* still — there the data
+genuinely is on one node and moving it would cost. But for independent
+branches, the reason they do not spread is the two above.
 
 ## When it goes wrong
 

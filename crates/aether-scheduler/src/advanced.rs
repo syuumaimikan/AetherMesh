@@ -19,7 +19,14 @@ pub const DEFAULT_BANDWIDTH_BYTES_PER_SEC: u64 = 12_500_000;
 pub const DEFAULT_LATENCY_MS: f32 = 50.0;
 
 /// How much each term counts.
-#[derive(Debug, Clone, Copy, PartialEq)]
+///
+/// `locality` is the one worth thinking about. Raise it and work follows its
+/// data, which moves fewer bytes and concentrates a workflow onto whichever
+/// node produced its first result. Lower it and work spreads, which uses more
+/// machines and moves more bytes. There is no value that is right for
+/// everybody, which is why it is a setting rather than a constant.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct ScoreWeights {
     /// Applied to CPU usage (0..=1).
     pub cpu: f32,
