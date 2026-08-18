@@ -82,6 +82,15 @@ pub enum ClientRequest {
     },
     /// Lists the nodes currently in the mesh.
     Nodes,
+    /// The last few tasks that finished, newest first.
+    ///
+    /// Separate from `Stats` on purpose: a dashboard polls that every second
+    /// and should not be paying for a list to do it. This is what you ask when
+    /// the question is "did my task run", which no counter can answer.
+    Recent {
+        #[serde(default)]
+        limit: Option<usize>,
+    },
     /// Reports what the mesh has moved, saved, and run.
     ///
     /// Everything here is a counter or a live count, never a per-task record:
@@ -127,6 +136,27 @@ pub struct StepOutcome {
     pub error: Option<String>,
 }
 
+/// One task that finished, as reported to a client.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FinishedTask {
+    pub task_id: String,
+    pub kind: String,
+    pub node_id: String,
+    pub success: bool,
+    pub duration_ms: f64,
+    /// Size of the whole output, of which `preview` is the front.
+    pub output_bytes: u64,
+    /// The first bytes of the output, with anything unprintable replaced.
+    ///
+    /// A preview rather than the output: results stay on the node that made
+    /// them, and a watcher wants to recognise their task, not read a dataset
+    /// through the control plane.
+    pub preview: String,
+    /// How long ago it finished. Elapsed rather than a timestamp, so nothing
+    /// depends on two machines agreeing about the time.
+    pub seconds_ago: f64,
+}
+
 /// What the controller answers.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -162,6 +192,9 @@ pub enum ClientResponse {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         resumed: Vec<usize>,
         success: bool,
+    },
+    Recent {
+        tasks: Vec<FinishedTask>,
     },
     Stats {
         /// Bytes moved, bytes saved, retries.
@@ -309,6 +342,10 @@ pub enum ClientCommand {
     },
     Stats {
         reply: oneshot::Sender<ClientResponse>,
+    },
+    Recent {
+        limit: usize,
+        reply: oneshot::Sender<Vec<FinishedTask>>,
     },
     Workflow {
         workflow: Box<aether_core::Workflow>,
@@ -543,6 +580,24 @@ fn admit<S, T>(
         ClientCommand::Stats { reply } => {
             let _ = reply.send(stats(state));
         }
+        ClientCommand::Recent { limit, reply } => {
+            let tasks = controller
+                .history()
+                .recent(limit)
+                .iter()
+                .map(|finished| FinishedTask {
+                    task_id: finished.task_id.to_string(),
+                    kind: finished.kind.clone(),
+                    node_id: finished.node_id.to_string(),
+                    success: finished.success,
+                    duration_ms: finished.duration.as_secs_f64() * 1000.0,
+                    output_bytes: finished.output_bytes,
+                    preview: finished.preview.clone(),
+                    seconds_ago: finished.age().as_secs_f64(),
+                })
+                .collect();
+            let _ = reply.send(tasks);
+        }
         // Handed on rather than run here: a workflow is awaited step by
         // step, and this function is not async.
         ClientCommand::Workflow {
@@ -677,6 +732,7 @@ async fn serve_request(request: &ClientRequest, gateway: &ClientGateway) -> Clie
         ClientRequest::Publish { data } => publish(data, gateway).await,
         request @ ClientRequest::Submit { .. } => submit(request, gateway).await,
         ClientRequest::Nodes => nodes(gateway).await,
+        ClientRequest::Recent { limit } => recent(*limit, gateway).await,
         ClientRequest::Stats => stats_of(gateway).await,
         ClientRequest::Workflow { steps, run } => workflow(steps, run.as_deref(), gateway).await,
     };
@@ -825,6 +881,24 @@ async fn workflow(
     answer
         .await
         .map_err(|_| "the workflow was dropped".to_string())
+}
+
+/// The last few finished tasks.
+async fn recent(limit: Option<usize>, gateway: &ClientGateway) -> Result<ClientResponse, String> {
+    let (reply, answer) = oneshot::channel();
+    gateway
+        .send(ClientCommand::Recent {
+            // Capped rather than trusted: a client asking for a million
+            // entries should get what there is, not a large allocation.
+            limit: limit.unwrap_or(20).min(crate::history::DEFAULT_HISTORY),
+            reply,
+        })
+        .await?;
+    let tasks = answer
+        .await
+        .map_err(|_| "the task history was dropped".to_string())?;
+
+    Ok(ClientResponse::Recent { tasks })
 }
 
 async fn nodes(gateway: &ClientGateway) -> Result<ClientResponse, String> {

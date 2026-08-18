@@ -1,11 +1,11 @@
-phase=otel-propagation
+phase=task-history
 status=complete
-next=A4-quic, A20-A23, SDK catch-up (workflow/run/stats)
+next=A4-quic, A20-A23, SDK catch-up (workflow/run/stats/recent)
 
 # Working notes for whoever picks this up next. Not documentation — the READMEs
 # and docs/ are. This is the stuff that would otherwise have to be rediscovered.
 
-test counts: 468 default / 523 with tls + cloud-http + otel (both crates)
+test counts: 478 default / 533 with tls + cloud-http + otel (both crates)
 
 ## Advanced phases
 
@@ -93,6 +93,29 @@ completed:
   locality=1.0 -> 1 node, 36 ms, 1.0x. locality=0.0 -> 4 nodes, 13 ms, 2.7x.
   In A9 that same comparison showed no difference at all, because there was
   never a second task in flight. Docs corrected in three places.
+
+- task history + TUI panel: asked for after running the TypeScript wasm example
+  and having nowhere but that terminal to see the result. controller/history.rs
+  is a bounded ring (64) of Finished {task/kind/node/success/duration/
+  output_bytes/preview/at}, recorded in Controller::submit so workflow steps
+  count too. Client API `recent`, Connection::recent, TUI "Recent tasks (mesh)"
+  panel beside the renamed "This window" log.
+
+  ON THE AUTHENTICATED CLIENT API ONLY, never /metrics - that port is
+  unauthenticated and already deliberately carries no per-node labels; a list
+  of what ran and what it produced is the same class of thing.
+
+  Preview is the first 48 bytes with non-printable ASCII replaced by '.', and
+  a test pins that: without it a task's output could write escape sequences to
+  a watcher's terminal. Full size reported separately so a preview is never
+  mistaken for the whole output.
+
+  `history::Finished` is not re-exported at the crate root - connection::Finished
+  already holds that name for a client's own submission result.
+
+  Live: `node sdk/typescript/examples/wasm.ts uppercase.wasm "hello from
+  typescript"` then a TUI frame showing
+  `wasm 0.1 ms a49ba179 2s HELLO FROM TYPESCRIPT`.
 
 - A14b trace propagation: Message::TaskAssignment carries a W3C traceparent
   (plain Option<String>, no dep in aether-protocol). Controller injects from

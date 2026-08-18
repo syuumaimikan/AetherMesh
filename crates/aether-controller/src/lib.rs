@@ -10,6 +10,7 @@ pub mod connections;
 pub mod dispatch;
 pub mod flow;
 pub mod health;
+pub mod history;
 pub mod network;
 pub mod observability;
 #[cfg(feature = "otel")]
@@ -39,6 +40,9 @@ pub use connections::Connections;
 pub use dispatch::{Controller, DispatchError, RetryPolicy, TaskTransport};
 pub use flow::{FlowError, FlowResult, run_workflow, run_workflow_resumable};
 pub use health::{DEFAULT_CHECK_INTERVAL, DEFAULT_HEARTBEAT_TIMEOUT, evict_stale_nodes};
+// `history::Finished` is not re-exported here: `connection::Finished` already
+// holds that name for what a *client* gets back from one submission.
+pub use history::{DEFAULT_HISTORY, History};
 pub use network::{DEFAULT_TASK_TIMEOUT, NetworkTransport};
 pub use observability::{MeshMetrics, MetricsSnapshot};
 pub use probe::{DEFAULT_PROBE_BYTES, DEFAULT_PROBE_INTERVAL, LinkMeasurement};

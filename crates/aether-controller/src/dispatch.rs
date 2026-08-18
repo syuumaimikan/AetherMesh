@@ -181,6 +181,9 @@ pub struct Controller<S, T> {
     /// API and the scrape endpoint can read them; this task owns the
     /// `Controller` exclusively, and these numbers are the point of the project.
     traffic: crate::observability::TrafficStats,
+    /// The last few finished tasks, so a watcher can see what ran rather than
+    /// only how many. Shared: the client API reads it while this task writes.
+    history: crate::history::History,
     /// Where finished workflow steps are recorded, when the operator asked for
     /// it. Shared because a workflow's steps run concurrently and each one
     /// records itself as it lands.
@@ -206,8 +209,21 @@ impl<S: Scheduler, T: TaskTransport + Send + Sync> Controller<S, T> {
             retry: RetryPolicy::default(),
             cache: None,
             traffic: crate::observability::TrafficStats::new(),
+            history: crate::history::History::default(),
             checkpoint: None,
         }
+    }
+
+    /// The last few finished tasks.
+    pub fn history(&self) -> &crate::history::History {
+        &self.history
+    }
+
+    /// Uses an existing ring, so the client API and this controller agree on
+    /// what ran even when they were built separately.
+    pub fn with_history(mut self, history: crate::history::History) -> Self {
+        self.history = history;
+        self
     }
 
     /// Records finished workflow steps to `journal`, so a named run that is
@@ -423,6 +439,7 @@ impl<S: Scheduler, T: TaskTransport + Send + Sync> Controller<S, T> {
 
             match attempted {
                 Ok(result) => {
+                    self.history.record(&task, &result);
                     self.record_output(&result);
                     if let Some(cache) = &self.cache {
                         cache.put(&task, &result);

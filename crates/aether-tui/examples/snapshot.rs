@@ -19,6 +19,7 @@ async fn main() -> anyhow::Result<()> {
     tokio::time::sleep(Duration::from_millis(400)).await;
     app.apply_stats(client.stats().await?, Instant::now());
     app.apply_nodes(client.nodes().await?);
+    app.apply_recent(client.recent(12).await?);
 
     let mut terminal = Terminal::new(TestBackend::new(118, 26))?;
     terminal.draw(|frame| ui::draw(frame, &app))?;

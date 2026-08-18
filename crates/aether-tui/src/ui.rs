@@ -30,10 +30,16 @@ pub fn draw(frame: &mut Frame, app: &App) {
         ])
         .split(area);
 
+    let bottom = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(38), Constraint::Percentage(62)])
+        .split(rows[3]);
+
     status(frame, rows[0], app);
     top(frame, rows[1], app);
     nodes(frame, rows[2], app);
-    activity(frame, rows[3], app);
+    activity(frame, bottom[0], app);
+    recent(frame, bottom[1], app);
     keys(frame, rows[4], app);
 
     match app.mode {
@@ -314,8 +320,73 @@ fn nodes(frame: &mut Frame, area: Rect, app: &App) {
     );
 }
 
+/// What the mesh finished lately, whoever asked for it.
+///
+/// The panel beside this one is only what *this* window did. A task submitted
+/// from a script, an SDK, or another terminal shows up here and nowhere else,
+/// which is the question that made this exist: "I ran something — did it work,
+/// and where?"
+fn recent(frame: &mut Frame, area: Rect, app: &App) {
+    let inner = block(frame, area, " Recent tasks (mesh) ");
+    if app.recent.is_empty() {
+        frame.render_widget(
+            Paragraph::new("nothing has finished yet").style(Style::default().fg(DIM)),
+            inner,
+        );
+        return;
+    }
+
+    let rows = app.recent.iter().take(inner.height as usize).map(|task| {
+        let (mark, colour) = if task.success {
+            ("✓", GOOD)
+        } else {
+            ("✕", BAD)
+        };
+        Row::new(vec![
+            Span::styled(mark, Style::default().fg(colour)),
+            Span::styled(task.kind.clone(), Style::default().fg(ACCENT)),
+            Span::styled(
+                format!("{:>7.1} ms", task.duration_ms),
+                Style::default().fg(Color::Reset),
+            ),
+            Span::styled(
+                task.node_id.chars().take(8).collect::<String>(),
+                Style::default().fg(DIM),
+            ),
+            Span::styled(ago(task.seconds_ago), Style::default().fg(DIM)),
+            // The output preview last, because it is the widest and the only
+            // part whose length the mesh does not control.
+            Span::styled(task.preview.clone(), Style::default().fg(Color::Reset)),
+        ])
+    });
+
+    frame.render_widget(
+        Table::new(
+            rows,
+            [
+                Constraint::Length(1),
+                Constraint::Length(10),
+                Constraint::Length(10),
+                Constraint::Length(9),
+                Constraint::Length(6),
+                Constraint::Min(8),
+            ],
+        ),
+        inner,
+    );
+}
+
+/// "3s", "2m", "1h" — a glance, not a timestamp.
+fn ago(seconds: f64) -> String {
+    match seconds {
+        s if s < 60.0 => format!("{s:.0}s"),
+        s if s < 3600.0 => format!("{:.0}m", s / 60.0),
+        s => format!("{:.0}h", s / 3600.0),
+    }
+}
+
 fn activity(frame: &mut Frame, area: Rect, app: &App) {
-    let inner = block(frame, area, " Activity ");
+    let inner = block(frame, area, " This window ");
     if app.log.is_empty() {
         frame.render_widget(
             Paragraph::new("press s to send a task").style(Style::default().fg(DIM)),
@@ -577,6 +648,42 @@ mod tests {
             "{screen}"
         );
         assert!(screen.contains("live"));
+    }
+
+    #[test]
+    fn a_task_somebody_else_submitted_is_on_the_screen() {
+        let mut app = app_with_data();
+        app.apply_recent(vec![aether_controller::client::FinishedTask {
+            task_id: "8e1b0f0e-3333".to_string(),
+            kind: "wasm".to_string(),
+            node_id: "4f3cb68b-1111".to_string(),
+            success: true,
+            duration_ms: 2.4,
+            output_bytes: 21,
+            preview: "HELLO FROM TYPESCRIPT".to_string(),
+            seconds_ago: 3.0,
+        }]);
+
+        let screen = render(&app, 120, 30);
+
+        // The whole point: this window never submitted it, and it is still here.
+        assert!(screen.contains("HELLO FROM TYPESCRIPT"), "{screen}");
+        assert!(screen.contains("wasm"), "{screen}");
+        assert!(screen.contains("3s"), "{screen}");
+    }
+
+    #[test]
+    fn an_idle_mesh_says_nothing_has_finished() {
+        let screen = render(&app_with_data(), 120, 30);
+
+        assert!(screen.contains("nothing has finished yet"), "{screen}");
+    }
+
+    #[test]
+    fn ages_are_readable_at_a_glance() {
+        assert_eq!(ago(3.0), "3s");
+        assert_eq!(ago(90.0), "2m");
+        assert_eq!(ago(7200.0), "2h");
     }
 
     #[test]

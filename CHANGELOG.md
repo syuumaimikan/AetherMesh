@@ -28,6 +28,15 @@ from 0.1.0 onward. Until then, `main` is the release.
 - **A workflow result says which step it belongs to.** `StepOutcome.step` was
   the position in the reply, so a workflow with a skipped step blamed the
   wrong step for everything after it.
+- **The TUI shows what the whole mesh ran, not just what it submitted.** A
+  task sent from an SDK, a script, or another terminal now appears in a
+  **Recent tasks** panel with where it ran, how long it took, and a short
+  preview of its output. The controller keeps a bounded ring of the last 64
+  finished tasks and serves it on the authenticated client API as `recent` —
+  never on `/metrics`, which stays counters-only for the same reason it
+  carries no per-node labels. Output previews replace anything unprintable, so
+  a task cannot write escape sequences to a watcher's terminal.
+
 - **Fixed: the binaries started up silently.** Enabling `tracing-subscriber`'s
   `env-filter` feature for the tracing work changed what
   `tracing_subscriber::fmt::init()` defaults to when `RUST_LOG` is unset —

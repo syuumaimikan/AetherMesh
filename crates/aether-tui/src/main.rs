@@ -31,6 +31,12 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long to wait between reconnection attempts once the link has dropped.
 const RECONNECT_DELAY: Duration = Duration::from_secs(2);
 
+/// How many finished tasks to ask for each poll.
+///
+/// Enough to fill the panel and no more: this is asked every second, and the
+/// answer is a debugging aid rather than a log.
+const RECENT_TASKS: usize = 12;
+
 #[derive(Parser)]
 #[command(
     name = "aether-tui",
@@ -161,6 +167,7 @@ async fn run(
 async fn poll(client: &mut Connection, app: &mut App) -> anyhow::Result<()> {
     app.apply_stats(client.stats().await?, Instant::now());
     app.apply_nodes(client.nodes().await?);
+    app.apply_recent(client.recent(RECENT_TASKS).await?);
     Ok(())
 }
 

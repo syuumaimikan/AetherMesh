@@ -210,6 +210,24 @@ impl Connection {
         }
     }
 
+    /// The last few tasks that finished anywhere in the mesh.
+    ///
+    /// Not only the ones this connection submitted: the question this answers
+    /// is "what has the mesh been doing", and a task somebody ran from another
+    /// window is exactly the interesting case.
+    pub async fn recent(
+        &mut self,
+        limit: usize,
+    ) -> Result<Vec<crate::client::FinishedTask>, ConnectionError> {
+        match self
+            .request(&ClientRequest::Recent { limit: Some(limit) })
+            .await?
+        {
+            ClientResponse::Recent { tasks } => Ok(tasks),
+            other => Err(refusal(other, "recent")),
+        }
+    }
+
     /// Everything the mesh has moved, saved, run, and queued.
     pub async fn stats(&mut self) -> Result<Stats, ConnectionError> {
         match self.request(&ClientRequest::Stats).await? {
@@ -320,6 +338,7 @@ fn name_of(response: &ClientResponse) -> &'static str {
         ClientResponse::Nodes { .. } => "nodes",
         ClientResponse::Stats { .. } => "stats",
         ClientResponse::Workflow { .. } => "workflow",
+        ClientResponse::Recent { .. } => "recent",
         ClientResponse::Error { .. } => "error",
     }
 }

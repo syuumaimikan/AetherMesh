@@ -472,13 +472,20 @@ aether-tui --controller 127.0.0.1:7100
 └────────────────────────────────────────┘└────────────────────────────────────┘└────────────────────────────────────┘
 ┌ Nodes (2) ─────────────────────────────────────────────────────────────────────────────────────────────────────────┐
 │   host                     id        cpu    mem    rtt       link         holds            labels                  │
-│●  syuum                    73ef9fd1  24%    80%    —         —            2 · 5.0 MiB      kind=gpu                │
-│●  syuum                    824d28e0  24%    80%    —         —            —                kind=cpu region=eu-west │
+│●  syuum                    91134f78  4%     55%    —         —            —                kind=cpu                │
+│●  syuum                    a49ba179  5%     55%    —         —            8 · 8.0 MiB                              │
 └────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌ This window ──────────────────────────────┐┌ Recent tasks (mesh) ──────────────────────────────────────────────────┐
+│press s to send a task                     ││✓ wasm           0.1 ms a49ba179  2s     HELLO FROM TYPESCRIPT         │
+│                                           ││✓ hash           0.7 ms a49ba179  2s     Di.....8&..z..N8....D.1.....$.│
+│                                           ││✓ hash           0.9 ms a49ba179  2s     Di.....8&..z..N8....D.1.....$.│
+└───────────────────────────────────────────┘└───────────────────────────────────────────────────────────────────────┘
  q quit   s send a task   ↑↓ node   +/- poll rate   r refresh   ? help
 ```
 
-A real frame from a real mesh. Under load the Mesh panel reads `queued 157 · oldest 1.5s`. The **Not moved** panel is the point of the project; the **holds** column is the locality the scheduler is deciding on. Press `s` to send a task and watch where it lands. Details: [`crates/aether-tui`](crates/aether-tui).
+A real frame from a real mesh. Under load the Mesh panel reads `queued 157 · oldest 1.5s`. The **Not moved** panel is the point of the project; the **holds** column is the locality the scheduler is deciding on.
+
+**Recent tasks** is the whole mesh, not this window. The `wasm` line above was submitted from a TypeScript script in another terminal — the answer to "I ran something, did it work and where?" without going back to the terminal that ran it. Binary output shows as dots because a task's output is arbitrary bytes and a terminal would happily execute the escape sequences in it; the preview is the front of the output, and the real size is what the task returned to whoever asked. Press `s` to send a task and watch where it lands. Details: [`crates/aether-tui`](crates/aether-tui).
 
 ### Or scrape it
 

@@ -45,6 +45,18 @@ task. A node marked `○` is registered but not reachable — the registry keeps
 until its heartbeat times out, deliberately, because one late heartbeat is not
 a death.
 
+**Recent tasks** — what the *mesh* finished, whoever asked for it. The panel
+beside it is only what this window did, so a task submitted from an SDK, a
+script, or another terminal appears here and nowhere else. That is the question
+this panel exists for: "I ran something — did it work, and where?"
+
+The last column is the front of the output, not the output: results stay on the
+node that produced them, and a preview is for recognising your task rather than
+reading a dataset through the control plane. Anything unprintable becomes `.`,
+because a task's output is arbitrary bytes and a terminal would happily act on
+the escape sequences in it. A watcher's screen is not somewhere a task gets to
+write.
+
 ## Keys
 
 | | |
@@ -77,6 +89,11 @@ Draining a node, cancelling a task, and changing scheduler weights are not here,
 because none of them exist to be controlled yet — placement is immediate and
 first-come, first-served, and the weights are fixed at startup. The dashboard
 will grow those controls when there is something behind them.
+
+The task history is the last 64 and lives in the controller's memory, so it is
+a debugging aid rather than a log: restart the controller and it is gone. That
+is deliberate — a control plane that remembers every task it ever ran is a
+memory leak with a nice interface.
 
 TLS is not wired up either: the dashboard speaks plaintext to the client API.
 Run it over a management network or an SSH tunnel until that lands.

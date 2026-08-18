@@ -225,6 +225,8 @@ pub struct App {
     pub queue: Option<QueueSnapshot>,
     pub totals: Totals,
     pub nodes: Vec<NodeSummary>,
+    /// What the mesh has finished lately, whoever submitted it.
+    pub recent: Vec<aether_controller::client::FinishedTask>,
     pub selected: usize,
     pub throughput: Throughput,
     pub log: VecDeque<Line>,
@@ -249,6 +251,7 @@ impl App {
             queue: None,
             totals: Totals::default(),
             nodes: Vec::new(),
+            recent: Vec::new(),
             selected: 0,
             throughput: Throughput::default(),
             log: VecDeque::new(),
@@ -258,6 +261,11 @@ impl App {
             submitting: false,
             refresh: false,
         }
+    }
+
+    /// Replaces the list of what finished recently.
+    pub fn apply_recent(&mut self, recent: Vec<aether_controller::client::FinishedTask>) {
+        self.recent = recent;
     }
 
     /// Folds a stats reading into the view.
