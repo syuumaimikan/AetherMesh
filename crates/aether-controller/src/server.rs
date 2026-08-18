@@ -209,6 +209,20 @@ where
                     Err(error) => warn!(%error, "dropping heartbeat"),
                 }
             }
+            Message::DataEvicted { data_ids, .. } => {
+                // Identity comes from the connection: a node may only forget
+                // its own data, or one agent could blind the scheduler to
+                // another's locality.
+                let Some(node_id) = registered_id.or(channel_for) else {
+                    warn!("eviction notice before registration");
+                    break Ok(());
+                };
+
+                for data_id in &data_ids {
+                    state.catalog.remove(*data_id, node_id);
+                }
+                debug!(%node_id, count = data_ids.len(), "node evicted data");
+            }
             Message::Pong { nonce } => {
                 if let Some(node_id) = registered_id {
                     state.connections.complete_pong(node_id, nonce);

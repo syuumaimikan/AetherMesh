@@ -15,6 +15,13 @@ from 0.1.0 onward. Until then, `main` is the release.
   Constraints filter before any scoring, so a task no node satisfies is
   refused rather than placed somewhere it was not allowed. Carried through the
   client API and all three SDKs.
+- **A storage budget on the agent** (`--storage-budget-mb`). An agent's data
+  cache previously grew for as long as the process ran, with no way to bound
+  it — fine on a workstation, fatal on a board with 1 GB of RAM. Over budget it
+  drops the least recently used datasets and tells the controller which ones,
+  so the catalog does not keep sending work whose inputs are gone.
+- **`/metrics` and `/healthz`** (`--metrics-listen`). The counters existed and
+  were already formatted for Prometheus; there was no way to fetch them.
 - **Java and C# SDKs**, joining TypeScript, Python, and Go. Neither has a
   runtime dependency: the Java one parses the protocol's JSON itself rather
   than putting a dependency-resolution problem between a user and their first
@@ -64,6 +71,10 @@ from 0.1.0 onward. Until then, `main` is the release.
   unsuitable for keys — but documentation does not travel with the bytes, and
   a module author reaching for it to build a nonce got something predictable
   with no signal that anything was wrong.
+- **An agent no longer registers with a fabricated CPU figure.** It sampled CPU
+  immediately after constructing the collector, and CPU usage is a difference
+  between two samples — on Windows the number came out as 100 %, which kept
+  work off a completely idle machine until its first heartbeat corrected it.
 - **Chunk deduplication no longer deadlocks** when the receiver already holds
   some of the chunks: the assembler fills those from the local store instead of
   waiting for a transfer that will never come.

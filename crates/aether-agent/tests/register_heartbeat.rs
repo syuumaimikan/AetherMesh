@@ -262,6 +262,45 @@ async fn an_input_is_transferred_once_and_reused_by_later_tasks() {
 }
 
 #[tokio::test]
+async fn a_node_over_its_storage_budget_drops_data_and_says_so() {
+    let harness = Harness::start().await;
+
+    // A budget that fits one dataset and not two.
+    let info = NodeInfo::new(NodeId::generate(), "small-board", "127.0.0.1:7001", 4);
+    let node_id = info.id;
+    let mut client = AgentClient::connect(harness.addr, info)
+        .await
+        .unwrap()
+        .with_storage_budget(48 * 1024);
+    tokio::spawn(async move {
+        let _ = client
+            .run(MetricsCollector::new(), Duration::from_secs(60))
+            .await;
+    });
+    harness
+        .wait_until(|registry| registry.contains(node_id))
+        .await;
+
+    let mut controller = harness.locality_controller();
+    let first = controller.publish(vec![1u8; 32 * 1024]);
+    let second = controller.publish(vec![2u8; 32 * 1024]);
+
+    for descriptor in [first, second] {
+        let task = Task::new(kind::HASH, Vec::new()).with_inputs(vec![descriptor.id]);
+        let result = controller.submit(task).await.unwrap();
+        assert!(result.is_success(), "task failed: {result:?}");
+    }
+
+    // The second dataset pushed the first out, and the controller was told —
+    // otherwise it would keep scoring this node as the cheapest place to run
+    // work whose input it has thrown away.
+    harness
+        .wait_until(|_| !harness.state.catalog.holds(first.id, node_id))
+        .await;
+    assert!(harness.state.catalog.holds(second.id, node_id));
+}
+
+#[tokio::test]
 async fn a_large_input_arrives_as_chunks_and_is_reassembled() {
     let harness = Harness::start().await;
     harness.attach_agent("worker").await;

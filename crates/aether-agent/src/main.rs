@@ -55,6 +55,11 @@ struct Args {
     /// `--label gpu=true --label region=eu-west`. Tasks can require these.
     #[arg(long = "label", value_name = "KEY=VALUE")]
     labels: Vec<String>,
+
+    /// Megabytes of received data this node will hold before dropping the
+    /// least recently used. Unset means no limit.
+    #[arg(long, value_name = "MB")]
+    storage_budget_mb: Option<u64>,
 }
 
 #[tokio::main]
@@ -91,6 +96,9 @@ async fn main() -> anyhow::Result<()> {
     // Flags add to the file rather than replacing it: the file says what the
     // machine is, the flags say what this run of it is.
     config.labels.extend(args.labels);
+    if let Some(megabytes) = args.storage_budget_mb {
+        config.storage_budget_bytes = Some(megabytes.saturating_mul(1024 * 1024));
+    }
 
     // A restarted agent keeps its identity, so the controller sees one node.
     let identity_path = config
@@ -132,6 +140,9 @@ async fn main() -> anyhow::Result<()> {
                 config.auth_token.clone(),
             )
             .await?;
+            if let Some(budget) = config.storage_budget_bytes {
+                client = client.with_storage_budget(budget);
+            }
             client.run(MetricsCollector::new(), heartbeat).await?;
         }
         #[cfg(not(feature = "tls"))]
@@ -143,6 +154,9 @@ async fn main() -> anyhow::Result<()> {
                 config.auth_token.clone(),
             )
             .await?;
+            if let Some(budget) = config.storage_budget_bytes {
+                client = client.with_storage_budget(budget);
+            }
 
             // Extra connections are opened before the run loop starts, so the
             // first large transfer already has them.

@@ -75,6 +75,24 @@ impl AgentClient<OwnedReadHalf> {
     }
 }
 
+impl<S> AgentClient<S> {
+    /// Caps how many bytes of other people's data this node will hold.
+    ///
+    /// Without a cap the store grows for as long as the agent runs, which is
+    /// survivable on a workstation and fatal on a small board. Over the cap,
+    /// the least recently used datasets are dropped and the controller is told
+    /// so its catalog does not keep claiming they are here.
+    pub fn with_storage_budget(mut self, budget_bytes: u64) -> Self {
+        self.store = DataStore::with_budget(budget_bytes);
+        self
+    }
+
+    /// The store's byte budget, if it has one.
+    pub fn storage_budget(&self) -> Option<u64> {
+        self.store.budget()
+    }
+}
+
 impl<S> AgentClient<S>
 where
     S: AsyncRead + Unpin,
@@ -180,11 +198,12 @@ where
             } => {
                 let wire_size = bytes.len();
                 match decompress(codec, &bytes) {
-                    Ok(bytes) => match self.store.insert(descriptor, bytes) {
-                        Ok(true) => {
-                            debug!(data_id = %descriptor.id, wire_size, ?codec, "data stored")
+                    Ok(bytes) => match self.store.insert_evicting(descriptor, bytes) {
+                        Ok((true, evicted)) => {
+                            debug!(data_id = %descriptor.id, wire_size, ?codec, "data stored");
+                            self.report_evictions(evicted);
                         }
-                        Ok(false) => debug!(data_id = %descriptor.id, "data already held"),
+                        Ok((false, _)) => debug!(data_id = %descriptor.id, "data already held"),
                         Err(error) => warn!(%error, "rejecting transferred data"),
                     },
                     Err(error) => warn!(%error, "rejecting transferred data"),
@@ -263,14 +282,35 @@ where
     fn finish_data(&self, data_id: aether_core::DataId, assembled: Option<Vec<u8>>) {
         if let Some(bytes) = assembled {
             let size = bytes.len();
-            self.store.put(bytes);
+            let (_, evicted) = self.store.put_evicting(bytes);
             debug!(%data_id, size, "chunked data assembled");
 
             let _ = self.outbound.send(Message::DataReady {
                 node_id: self.node_id,
                 data_id,
             });
+            self.report_evictions(evicted);
         }
+    }
+
+    /// Tells the controller which datasets this node no longer holds.
+    ///
+    /// Without it the catalog keeps crediting this node with data it dropped,
+    /// and the scheduler keeps picking it as the cheapest place to run work
+    /// whose inputs are no longer here.
+    fn report_evictions(&self, data_ids: Vec<aether_core::DataId>) {
+        if data_ids.is_empty() {
+            return;
+        }
+        debug!(
+            count = data_ids.len(),
+            "evicted data to stay inside the budget"
+        );
+
+        let _ = self.outbound.send(Message::DataEvicted {
+            node_id: self.node_id,
+            data_ids,
+        });
     }
 
     /// Opens `count` extra TCP connections for bulk data.

@@ -20,3 +20,20 @@ tls_key_path = "key.pem"
 
 # Seconds between metrics log lines. 0 turns them off.
 metrics_interval_secs = 60
+
+# Address the client API listens on (publish data, submit tasks).
+# Remove to run without one.
+client_listen = "0.0.0.0:7100"
+
+# Serve /metrics (Prometheus) and /healthz here. Unset serves neither.
+# No authentication, so bind it to localhost or a management interface.
+metrics_listen = "127.0.0.1:9100"
+
+# Seconds between link measurements. 0 leaves the scheduler on whatever
+# latency and bandwidth were configured by hand.
+probe_interval_secs = 60
+
+# Cache results of identical work: same kind, same payload, same inputs,
+# same module. 0 entries turns it off. Failures are never cached.
+result_cache_entries = 1024
+result_cache_ttl_secs = 300

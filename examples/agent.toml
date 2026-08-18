@@ -30,3 +30,18 @@ tls_ca_path = "cert.pem"
 # Link speed toward this node, in bytes per second. Feeds the scheduler's
 # transfer cost and the compression policy. Leave unset if you do not know it.
 bandwidth_bytes_per_sec = 12500000
+
+# What this machine is. Tasks constrain against these, so a task requiring
+# `gpu=true` never lands on a node that has not claimed it. Nothing verifies
+# a label: claiming a GPU you do not have means being sent GPU work you fail.
+labels = ["kind=cpu", "region=eu-west"]
+
+# Most bytes of received data this node will hold at once. Over it, the least
+# recently used datasets are dropped and the controller is told, so it stops
+# sending work whose inputs are no longer here. Unset means no limit — fine on
+# a workstation, not on a board with 1 GB of RAM.
+storage_budget_bytes = 268435456
+
+# Extra connections to offer for bulk data. Chunks are spread across them,
+# which helps when one TCP stream cannot fill the link.
+data_channels = 2

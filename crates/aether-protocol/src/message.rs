@@ -51,6 +51,16 @@ pub enum Message {
     },
     /// Controller -> agent: registration refused; the connection then closes.
     RegisterRejected { reason: String },
+    /// Agent -> controller: these datasets are no longer held here.
+    ///
+    /// An agent with a storage budget drops the least recently used data to
+    /// stay inside it. Without this message the controller's catalog would keep
+    /// claiming the node has them, and would keep scoring it as the cheapest
+    /// place to run work whose inputs it has actually thrown away.
+    DataEvicted {
+        node_id: NodeId,
+        data_ids: Vec<aether_core::DataId>,
+    },
     /// Agent -> controller: still alive, with fresh metrics.
     Heartbeat {
         node_id: NodeId,
@@ -140,6 +150,7 @@ impl Message {
             Self::RegisterNode { .. } => "register_node",
             Self::RegisterAccepted { .. } => "register_accepted",
             Self::RegisterRejected { .. } => "register_rejected",
+            Self::DataEvicted { .. } => "data_evicted",
             Self::Heartbeat { .. } => "heartbeat",
             Self::SubmitTask { .. } => "submit_task",
             Self::DataTransfer { .. } => "data_transfer",

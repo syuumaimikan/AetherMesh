@@ -72,6 +72,16 @@ mesh.run("hash", payload, constraints=["gpu=true", "region!=us-east"])
 
 `key=value`, `key!=value`, and a bare `key` for "has this label at all". Constraints are a filter, not a preference — a task that nothing satisfies waits and reports it rather than landing on a machine that cannot do the job. This is how you keep GPU work off the CPU boxes and regulated data inside its jurisdiction.
 
+### A node can be told how much it is willing to hold
+
+Received datasets are cached so the next task that reads them does not move them again. Left alone, that cache grows for as long as the agent runs — survivable on a workstation, fatal on a board with 1 GB of RAM.
+
+```bash
+aether-agent --storage-budget-mb 256
+```
+
+Over budget, the least recently used datasets are dropped, and the agent **tells the controller which ones**. That part matters: a catalog that keeps crediting a node with data it threw away keeps sending that node work whose inputs are no longer there. Data already handed to a running task stays alive until the task finishes.
+
 ### An idle node costs almost nothing to keep
 
 A mesh spends most of its life with nothing to do, and a fixed heartbeat makes that the expensive state: every few seconds, on every machine, a core wakes up to say nothing has changed. So the interval is not fixed. A node running work — or one whose load has visibly moved, even from something the mesh did not start — reports at the configured rate. A node where nothing is happening doubles its gap each time.

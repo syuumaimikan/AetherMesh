@@ -31,6 +31,13 @@ pub struct AgentConfig {
     /// Tasks constrain against these, so declaring `gpu=true` on a box without
     /// a GPU is how you get GPU work scheduled onto a machine that cannot do it.
     pub labels: Vec<String>,
+    /// Most bytes of received data this node will hold at once.
+    ///
+    /// `None` means no limit, which is fine on a workstation and not on a
+    /// small board: an agent that never forgets anything grows for as long as
+    /// it runs. Over the limit, the least recently used datasets are dropped
+    /// and the controller is told.
+    pub storage_budget_bytes: Option<u64>,
     /// Link speed toward this node, in bytes per second, if you know it.
     pub bandwidth_bytes_per_sec: Option<u64>,
     /// Extra connections to offer for bulk data. Chunks are spread across them,
@@ -51,6 +58,7 @@ impl Default for AgentConfig {
             tls_client_cert_path: None,
             tls_client_key_path: None,
             labels: Vec::new(),
+            storage_budget_bytes: None,
             bandwidth_bytes_per_sec: None,
             data_channels: 0,
         }
