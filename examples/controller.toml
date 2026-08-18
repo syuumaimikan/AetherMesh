@@ -58,6 +58,11 @@ queue_rejection = "reject"
 # can override this per submission with `timeout_ms`.
 queue_timeout_secs = 0
 
+# Seconds between autoscaler readings. 0 turns it off, which is the default.
+# It only ever recommends: acting on the recommendation is your decision, or
+# aether-cloud's. A bad reading should cost a log line, not a bill.
+autoscale_interval_secs = 0
+
 # What each term of the placement score counts for.
 #   score = cpu*cpu_usage + memory*memory_usage + transfer*seconds
 #           + latency*seconds - locality*share_already_here
@@ -72,3 +77,23 @@ memory = 0.5
 transfer = 1.0
 latency = 1.0
 locality = 1.0
+
+
+[autoscale]
+# What to scale towards. One of:
+#   { kind = "queue_length",    per_node = 2.0 }   work waiting per node
+#   { kind = "cpu_utilization", fraction = 0.7 }   when tasks are long and
+#                                                  the queue rarely builds
+#   { kind = "latency",         max_wait_secs = 5.0 }  when you promised a deadline
+target = { kind = "queue_length", per_node = 2.0 }
+
+min_nodes = 1
+max_nodes = 16
+
+# Long enough for a machine to boot, register, and start draining. Anything
+# shorter decides again before the last decision has had an effect.
+cooldown_secs = 120
+
+# How far off target counts as off target. Without a dead band the mesh
+# oscillates around the target forever, paying startup cost on every swing.
+tolerance = 0.25

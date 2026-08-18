@@ -56,6 +56,14 @@ pub struct ControllerConfig {
     /// averages — no hostnames, ids, or addresses — but bind it to localhost
     /// or a management interface anyway.
     pub metrics_listen: Option<SocketAddr>,
+    /// Seconds between autoscaler readings. Zero turns it off, which is the
+    /// default: a mesh nobody is provisioning does not need the log lines.
+    ///
+    /// It only ever recommends. Acting on the recommendation is an operator's
+    /// decision, or `aether-cloud`'s.
+    pub autoscale_interval_secs: u64,
+    /// How eagerly to recommend scaling, and how far.
+    pub autoscale: crate::autoscale::Policy,
     /// What each term of the placement score counts for.
     ///
     /// `locality` is the trade-off: high keeps work with its data and on
@@ -95,6 +103,8 @@ impl Default for ControllerConfig {
             queue_rejection: crate::queue::Rejection::default(),
             metrics_interval_secs: 60,
             metrics_listen: None,
+            autoscale_interval_secs: 0,
+            autoscale: crate::autoscale::Policy::default(),
             scheduler_weights: aether_scheduler::ScoreWeights::default(),
             probe_interval_secs: 60,
             probe_bytes: crate::probe::DEFAULT_PROBE_BYTES,

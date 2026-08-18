@@ -186,6 +186,35 @@ queue_timeout_secs = 30
 
 同時実行数には上限があります。飛んでいるタスクは返信チャネルと入力の転送コストを抱えるので、1 万本まとめて投げられたらコントローラを枯渇させるのではなくキューに並べます。
 
+### 「ノードが足りない」とだけ言って、それ以上はしない
+
+コントローラは自分のキューを見て、いま目の前にある仕事が何台分なのかを教えてくれます。起動はしません。ログに推奨を出すだけで、実際にマシンを立てるのは、もともとお金を使う権限を持っているもの — `aether-cloud`、自前のスケジューラ、あるいはログを読んだ人 — の仕事のままです。
+
+```toml
+autoscale_interval_secs = 30      # 既定は 0（無効）
+
+[autoscale]
+target = { kind = "queue_length", per_node = 2.0 }
+min_nodes = 1
+max_nodes = 16
+cooldown_secs = 120
+tolerance = 0.25
+```
+
+目標は 3 種類あります。かかっている圧力の種類がメッシュごとに違うからです。`queue_length` は最も直接的な信号で、到着したのに処理されていない仕事そのもの。`cpu_utilization` はタスクが長くてキューが溜まりにくいときに向きます。`latency` は、誰かに約束したのが締切だったときのためのものです。
+
+効くのは、これを雑音にしないための 2 つの設定です。`tolerance` は不感帯で、これがないと目標付近にいるメッシュは増やす・減らす・増やすを延々と繰り返します。`cooldown_secs` は、マシンが起動し、登録し、キューを削り始めるまでより長くしてください。短いと、前の判断が効く前に次の判断を下すことになります。それから、バックログはスケールダウンを拒否します — 仕事が待っているのに CPU が低いのは、たいてい暇なのではなく詰まっているからです。
+
+実際のメッシュで測ったもの。`--max-concurrent-tasks 1` に絞ったエージェント 1 台に 900 タスクを流し込み、`max_nodes = 12`、`cooldown_secs = 3`。
+
+```
+autoscaler recommends more nodes (recommendation only) from=0 to=1   0 node(s), below the minimum of 1
+autoscaler recommends more nodes (recommendation only) from=1 to=12  667 queued against a target of 2; adding capacity
+autoscaler recommends more nodes (recommendation only) from=1 to=12  166 queued against a target of 2; adding capacity
+```
+
+3 秒間隔で 3 回、キューが捌けたあとは沈黙。この沈黙のほうが本体です。毎回何か言う推奨エンジンは、そのうち読まれなくなります。
+
 ### 落ちても止まらない
 
 heartbeat が途切れたノードは退去させ、そのノードが持っていたデータの記録も消します。配送に失敗したタスクは次に良いノードへ回し、必要なデータも一緒に運びます。**走った結果として失敗したタスク**は結果として返し、無限に再試行はしません。

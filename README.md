@@ -190,6 +190,35 @@ Nine of sixteen rather than sixteen, because the client and controller are compe
 
 The number in flight is bounded rather than unlimited: every task out holds a reply channel and whatever its inputs cost to send, so a client submitting ten thousand at once queues instead of exhausting the controller.
 
+### It says when the mesh is too small, and stops there
+
+The controller can watch its own queue and tell you how many nodes the work in front of it actually wants. It does not start any: it logs a recommendation, and starting machines stays with whatever already has the right to spend money — `aether-cloud`, your own scheduler, or a person reading the log.
+
+```toml
+autoscale_interval_secs = 30      # 0, the default, turns it off
+
+[autoscale]
+target = { kind = "queue_length", per_node = 2.0 }
+min_nodes = 1
+max_nodes = 16
+cooldown_secs = 120
+tolerance = 0.25
+```
+
+Three targets, because meshes are not all under the same kind of pressure. `queue_length` is the direct signal — work that has arrived and is not being done. `cpu_utilization` is right when tasks are long enough that the queue rarely builds. `latency` is right when what you promised somebody was a deadline.
+
+The two settings that matter most are the ones that stop it being noise. `tolerance` is a dead band: without one, a mesh sitting near its target recommends up, then down, then up, forever. `cooldown_secs` should be longer than a machine takes to boot, register, and start draining, or the next decision is made before the last one could have had any effect. And backlog vetoes scale-down — a mesh with work waiting does not shed nodes because CPU looks low, since low CPU with a full queue usually means the nodes are blocked, not idle.
+
+Measured against a live mesh: one agent pinned to `--max-concurrent-tasks 1`, flooded with 900 tasks, `max_nodes = 12`, `cooldown_secs = 3`.
+
+```
+autoscaler recommends more nodes (recommendation only) from=0 to=1   0 node(s), below the minimum of 1
+autoscaler recommends more nodes (recommendation only) from=1 to=12  667 queued against a target of 2; adding capacity
+autoscaler recommends more nodes (recommendation only) from=1 to=12  166 queued against a target of 2; adding capacity
+```
+
+Three readings three seconds apart, then silence once the queue drained. That silence is the feature: a recommendation engine that says something every interval is one you stop reading.
+
 ### Failures are ordinary
 
 Heartbeats stop → the node is evicted and its data locations are forgotten. A node refuses a task → the task is re-dispatched to the next best node, data and all. A task that *ran* and failed is returned as a result, not retried forever.

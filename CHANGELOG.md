@@ -9,6 +9,13 @@ from 0.1.0 onward. Until then, `main` is the release.
 
 ### Added
 
+- **The controller says when the mesh is too small.** Set
+  `autoscale_interval_secs` and it watches its own queue against a target
+  (`queue_length`, `cpu_utilization`, or `latency`) and logs how many nodes the
+  backlog wants. It only ever recommends — nothing in AetherMesh starts a
+  machine or spends money on your behalf. A dead band and a cooldown keep it
+  from oscillating, and a backlog vetoes scaling down, because low CPU with a
+  full queue means blocked rather than idle. Off by default.
 - **Node labels and task constraints.** An agent declares what it is
   (`--label gpu=true --label region=eu-west`); a task says what it needs
   (`gpu=true`, `region!=us-east`, or a bare `nvme` for "has this label").

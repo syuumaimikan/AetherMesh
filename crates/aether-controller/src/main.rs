@@ -190,6 +190,20 @@ async fn main() -> anyhow::Result<()> {
             Duration::from_secs(config.metrics_interval_secs),
         ));
     }
+    if config.autoscale_interval_secs > 0 {
+        info!(
+            interval_secs = config.autoscale_interval_secs,
+            target = ?config.autoscale.target,
+            min = config.autoscale.min_nodes,
+            max = config.autoscale.max_nodes,
+            "autoscaler watching (recommends only; it does not provision)"
+        );
+        tokio::spawn(aether_controller::autoscale::monitor(
+            state.clone(),
+            config.autoscale,
+            Duration::from_secs(config.autoscale_interval_secs),
+        ));
+    }
     if let Some(metrics_addr) = config.metrics_listen {
         let (listener, metrics_addr) = aether_controller::bind_metrics(metrics_addr).await?;
         info!(%metrics_addr, "serving /metrics and /healthz");
