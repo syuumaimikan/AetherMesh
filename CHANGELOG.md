@@ -28,6 +28,12 @@ from 0.1.0 onward. Until then, `main` is the release.
 - **A workflow result says which step it belongs to.** `StepOutcome.step` was
   the position in the reply, so a workflow with a skipped step blamed the
   wrong step for everything after it.
+- **All five SDKs reach the whole client API.** Go, Java and .NET now have
+  `workflow()` with `run` for resume, `recent()`, `stats()`, task priorities,
+  and the node fields added since they were written. Each was verified against
+  a live mesh rather than assumed, and each ships a `CheckAll` example that
+  exercises the lot so the API tables stay honest.
+
 - **Fixed: concurrent tasks sharing an input sent it more than once.** Two
   tasks dispatched at the same time, both wanting the same dataset on the same
   node, both sent it. The chunk streams interleaved, the agent rejected chunks

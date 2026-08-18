@@ -82,14 +82,99 @@ public final class AetherMesh implements AutoCloseable {
             String error) {
     }
 
-    /** One node in the mesh. {@code labels} is what it claims to be. */
+    /**
+     * One node in the mesh. {@code labels} is what it claims to be.
+     *
+     * <p>{@code datasetsHeld} is what it already has: work reading those costs
+     * no transfer, which is the decision the scheduler makes on every task.
+     * {@code connected} is not the same as registered — a node keeps its
+     * registration until its heartbeat times out, because one late heartbeat
+     * is not a death.
+     */
     public record NodeSummary(
             String nodeId,
             String hostname,
             int cpuCores,
             double cpuUsage,
             double memoryUsage,
-            Map<String, String> labels) {
+            Map<String, String> labels,
+            String address,
+            int datasetsHeld,
+            long bytesHeld,
+            boolean connected) {
+    }
+
+    /**
+     * Who waits once more work has arrived than there are nodes.
+     *
+     * <p>Changes nothing on an idle mesh: a queue nobody is waiting in has no
+     * order worth arguing about.
+     */
+    public enum Priority {
+        CRITICAL,
+        HIGH,
+        NORMAL,
+        LOW,
+        BACKGROUND;
+
+        String wire() {
+            return name().toLowerCase(java.util.Locale.ROOT);
+        }
+    }
+
+    /**
+     * One step of a workflow.
+     *
+     * <p>{@code dependsOn} holds indices into the list of steps. Every
+     * dependency's output becomes an input of the step waiting for it, so a
+     * step reads what the steps before it produced — and, because the mesh
+     * knows which node holds that output, reads it without moving it.
+     */
+    public record Step(
+            String kind,
+            byte[] payload,
+            List<Integer> dependsOn,
+            List<String> inputs,
+            List<String> constraints,
+            String module) {
+
+        public static Step of(String kind, byte[] payload, Integer... dependsOn) {
+            return new Step(kind, payload, List.of(dependsOn), List.of(), List.of(), null);
+        }
+    }
+
+    /**
+     * What one step did. {@code step} is its index in the submitted workflow,
+     * not its position in the reply — those differ as soon as any step is
+     * skipped or resumed.
+     */
+    public record StepOutcome(
+            int step,
+            String nodeId,
+            boolean success,
+            byte[] output,
+            double durationMs,
+            String error) {
+    }
+
+    /** What a workflow produced. */
+    public record WorkflowResult(
+            List<StepOutcome> steps,
+            List<Integer> skipped,
+            List<Integer> resumed,
+            boolean success) {
+    }
+
+    /** One task that finished anywhere in the mesh. */
+    public record FinishedTask(
+            String taskId,
+            String kind,
+            String nodeId,
+            boolean success,
+            double durationMs,
+            long outputBytes,
+            String preview,
+            double secondsAgo) {
     }
 
     /** Where the controller is and how to authenticate to it. */
@@ -197,24 +282,153 @@ public final class AetherMesh implements AutoCloseable {
      */
     public TaskResult run(String kind, byte[] payload, List<String> inputs, List<String> constraints)
             throws IOException {
-        return submit(kind, payload, inputs, constraints, null);
+        return submit(kind, payload, inputs, constraints, null, null);
     }
 
     /** Runs a built-in task with no inputs and no constraints. */
     public TaskResult run(String kind, byte[] payload) throws IOException {
-        return submit(kind, payload, List.of(), List.of(), null);
+        return submit(kind, payload, List.of(), List.of(), null, null);
+    }
+
+    /** Runs a task, saying how urgently it wants a node once a backlog forms. */
+    public TaskResult run(
+            String kind,
+            byte[] payload,
+            Priority priority,
+            List<String> inputs,
+            List<String> constraints)
+            throws IOException {
+        return submit(kind, payload, inputs, constraints, null, priority);
+    }
+
+    /**
+     * Runs several tasks, each after the ones it depends on.
+     *
+     * <p>A non-null {@code run} names the run, so submitting the same workflow
+     * again resumes it rather than repeating it: steps that already finished
+     * are skipped when their output is still on a node. Needs a controller
+     * started with {@code checkpoint_path}.
+     *
+     * <p>Reusing a name for a <em>different</em> workflow throws rather than
+     * resuming. Skipping step 3 because another graph's step 3 finished is the
+     * one failure here that answers confidently and wrongly.
+     */
+    public WorkflowResult workflow(List<Step> steps, String run) throws IOException {
+        List<Object> encoded = new ArrayList<>();
+        for (Step step : steps) {
+            Map<String, Object> entry = new LinkedHashMap<>();
+            entry.put("kind", step.kind());
+            entry.put(
+                    "payload",
+                    Base64.getEncoder().encodeToString(step.payload() == null ? new byte[0] : step.payload()));
+            entry.put("depends_on", step.dependsOn() == null ? List.of() : List.copyOf(step.dependsOn()));
+            entry.put("inputs", step.inputs() == null ? List.of() : List.copyOf(step.inputs()));
+            entry.put(
+                    "constraints",
+                    step.constraints() == null ? List.of() : List.copyOf(step.constraints()));
+            entry.put("module", step.module());
+            encoded.add(entry);
+        }
+
+        Map<String, Object> request = new LinkedHashMap<>();
+        request.put("type", "workflow");
+        request.put("steps", encoded);
+        if (run != null) {
+            request.put("run", run);
+        }
+
+        Map<String, Object> frame = request(request);
+        expect(frame, "workflow");
+
+        List<StepOutcome> outcomes = new ArrayList<>();
+        if (frame.get("steps") instanceof List<?> entries) {
+            for (Object entry : entries) {
+                if (!(entry instanceof Map<?, ?> raw)) {
+                    continue;
+                }
+                @SuppressWarnings("unchecked")
+                Map<String, Object> outcome = (Map<String, Object>) raw;
+                outcomes.add(new StepOutcome(
+                        (int) number(outcome, "step"),
+                        text(outcome, "node_id", ""),
+                        Boolean.TRUE.equals(outcome.get("success")),
+                        Base64.getDecoder().decode(text(outcome, "output", "")),
+                        number(outcome, "duration_ms"),
+                        outcome.get("error") instanceof String message ? message : null));
+            }
+        }
+
+        return new WorkflowResult(
+                outcomes,
+                integers(frame.get("skipped")),
+                integers(frame.get("resumed")),
+                Boolean.TRUE.equals(frame.get("success")));
+    }
+
+    /** Runs a workflow without naming it, so nothing is recorded or resumed. */
+    public WorkflowResult workflow(List<Step> steps) throws IOException {
+        return workflow(steps, null);
+    }
+
+    /**
+     * The last few tasks that finished anywhere in the mesh.
+     *
+     * <p>Not only the ones this connection submitted: a task somebody else ran
+     * is exactly the interesting case. The preview is the front of the output,
+     * not the output — results stay on the node that produced them.
+     */
+    public List<FinishedTask> recent(int limit) throws IOException {
+        Map<String, Object> frame = request(Map.of("type", "recent", "limit", limit));
+        expect(frame, "recent");
+
+        List<FinishedTask> tasks = new ArrayList<>();
+        if (!(frame.get("tasks") instanceof List<?> entries)) {
+            return tasks;
+        }
+        for (Object entry : entries) {
+            if (!(entry instanceof Map<?, ?> raw)) {
+                continue;
+            }
+            @SuppressWarnings("unchecked")
+            Map<String, Object> task = (Map<String, Object>) raw;
+            tasks.add(new FinishedTask(
+                    text(task, "task_id", ""),
+                    text(task, "kind", ""),
+                    text(task, "node_id", ""),
+                    Boolean.TRUE.equals(task.get("success")),
+                    number(task, "duration_ms"),
+                    (long) number(task, "output_bytes"),
+                    text(task, "preview", ""),
+                    number(task, "seconds_ago")));
+        }
+        return tasks;
+    }
+
+    /**
+     * What the mesh has moved, saved, run and queued, as the controller sent it.
+     *
+     * <p>Returned raw rather than as a record: this is a dashboard feed that
+     * grows fields, and a client receiving one it does not know about should
+     * see it rather than lose it.
+     */
+    public Map<String, Object> stats() throws IOException {
+        Map<String, Object> frame = request(Map.of("type", "stats"));
+        expect(frame, "stats");
+        Map<String, Object> copy = new LinkedHashMap<>(frame);
+        copy.remove("type");
+        return copy;
     }
 
     /** Runs a WebAssembly module previously published. */
     public TaskResult runWasm(
             String moduleId, byte[] payload, List<String> inputs, List<String> constraints)
             throws IOException {
-        return submit("wasm", payload, inputs, constraints, moduleId);
+        return submit("wasm", payload, inputs, constraints, moduleId, null);
     }
 
     /** Runs a WebAssembly module with no extra inputs and no constraints. */
     public TaskResult runWasm(String moduleId, byte[] payload) throws IOException {
-        return submit("wasm", payload, List.of(), List.of(), moduleId);
+        return submit("wasm", payload, List.of(), List.of(), moduleId, null);
     }
 
     /** Lists the nodes currently in the mesh. */
@@ -245,7 +459,11 @@ public final class AetherMesh implements AutoCloseable {
                     (int) number(node, "cpu_cores"),
                     number(node, "cpu_usage"),
                     number(node, "memory_usage"),
-                    labels));
+                    labels,
+                    text(node, "address", ""),
+                    (int) number(node, "datasets_held"),
+                    (long) number(node, "bytes_held"),
+                    Boolean.TRUE.equals(node.get("connected"))));
         }
         return nodes;
     }
@@ -256,7 +474,12 @@ public final class AetherMesh implements AutoCloseable {
     }
 
     private TaskResult submit(
-            String kind, byte[] payload, List<String> inputs, List<String> constraints, String module)
+            String kind,
+            byte[] payload,
+            List<String> inputs,
+            List<String> constraints,
+            String module,
+            Priority priority)
             throws IOException {
         Map<String, Object> request = new LinkedHashMap<>();
         request.put("type", "submit");
@@ -265,6 +488,7 @@ public final class AetherMesh implements AutoCloseable {
         request.put("inputs", List.copyOf(inputs));
         request.put("constraints", List.copyOf(constraints));
         request.put("module", module);
+        request.put("priority", priority == null ? null : priority.wire());
 
         Map<String, Object> frame = request(request);
         expect(frame, "result");
@@ -308,6 +532,19 @@ public final class AetherMesh implements AutoCloseable {
             return;
         }
         throw new MeshException(text(frame, "message", "expected " + type + ", got " + frame.get("type")));
+    }
+
+    /** Reads a JSON array of numbers, which is how step indices arrive. */
+    private static List<Integer> integers(Object value) {
+        List<Integer> out = new ArrayList<>();
+        if (value instanceof List<?> entries) {
+            for (Object entry : entries) {
+                if (entry instanceof Number number) {
+                    out.add(number.intValue());
+                }
+            }
+        }
+        return out;
     }
 
     private static String text(Map<String, Object> frame, String name, String fallback) {

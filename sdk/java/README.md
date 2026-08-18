@@ -82,8 +82,15 @@ the JDK's default trust store will not have it.
 | `mesh.publish(byte[])` / `mesh.publishFile(path)` | `Published(dataId, sizeBytes)` |
 | `mesh.run(kind, payload[, inputs, constraints])` | `TaskResult` — built-in `echo`, `hash`, `cpu` |
 | `mesh.runWasm(moduleId, payload[, inputs, constraints])` | `TaskResult` |
-| `mesh.nodes()` | `List<NodeSummary>`, each with its `labels` |
+| `mesh.run(kind, payload, priority, inputs, constraints)` | `TaskResult`, saying how urgently it wants a node |
+| `mesh.workflow(steps[, run])` | `WorkflowResult` — steps that depend on each other; `run` resumes |
+| `mesh.nodes()` | `List<NodeSummary>` — labels, `datasetsHeld`, `connected`, … |
+| `mesh.recent(limit)` | `List<FinishedTask>` — what the *mesh* finished lately |
+| `mesh.stats()` | `Map<String, Object>` — traffic, counters, queue |
 | `mesh.close()` | — |
+
+[`examples/CheckAll.java`](examples/CheckAll.java) exercises all of it against a
+running mesh, which is how the table above is kept honest.
 
 A `TaskResult` carries `taskId`, `nodeId`, `success`, `output`, `durationMs`,
 and `error`. A task that ran and failed comes back with `success() == false` and

@@ -41,7 +41,80 @@ public readonly record struct NodeSummary(
     int CpuCores,
     double CpuUsage,
     double MemoryUsage,
-    IReadOnlyDictionary<string, string> Labels);
+    IReadOnlyDictionary<string, string> Labels,
+    string Address,
+    int DatasetsHeld,
+    long BytesHeld,
+    bool Connected);
+
+/// <summary>Who waits once more work has arrived than there are nodes.</summary>
+/// <remarks>
+/// Changes nothing on an idle mesh: a queue nobody is waiting in has no order
+/// worth arguing about.
+/// </remarks>
+public enum Priority
+{
+    /// <summary>Ahead of everything else waiting.</summary>
+    Critical,
+
+    /// <summary>Ahead of ordinary work: a person is waiting on it.</summary>
+    High,
+
+    /// <summary>The default.</summary>
+    Normal,
+
+    /// <summary>Behind ordinary work, but not behind it forever.</summary>
+    Low,
+
+    /// <summary>Whenever nothing else wants the node.</summary>
+    Background,
+}
+
+/// <summary>One step of a workflow.</summary>
+/// <remarks>
+/// <c>DependsOn</c> holds indices into the list of steps. Every dependency's
+/// output becomes an input of the step waiting for it, so a step reads what the
+/// steps before it produced — and, because the mesh knows which node holds that
+/// output, reads it without moving it.
+/// </remarks>
+public sealed record Step(
+    string Kind,
+    ReadOnlyMemory<byte> Payload = default,
+    IReadOnlyList<int>? DependsOn = null,
+    IReadOnlyList<string>? Inputs = null,
+    IReadOnlyList<string>? Constraints = null,
+    string? Module = null);
+
+/// <summary>What one step of a workflow did.</summary>
+/// <remarks>
+/// <c>Step</c> is its index in the submitted workflow, not its position in the
+/// reply — those differ as soon as any step is skipped or resumed.
+/// </remarks>
+public readonly record struct StepOutcome(
+    int Step,
+    string NodeId,
+    bool Success,
+    byte[] Output,
+    double DurationMs,
+    string? Error);
+
+/// <summary>What a workflow produced.</summary>
+public readonly record struct WorkflowResult(
+    IReadOnlyList<StepOutcome> Steps,
+    IReadOnlyList<int> Skipped,
+    IReadOnlyList<int> Resumed,
+    bool Success);
+
+/// <summary>One task that finished anywhere in the mesh.</summary>
+public readonly record struct FinishedTask(
+    string TaskId,
+    string Kind,
+    string NodeId,
+    bool Success,
+    double DurationMs,
+    long OutputBytes,
+    string Preview,
+    double SecondsAgo);
 
 /// <summary>Where the controller is and how to authenticate to it.</summary>
 public sealed class MeshOptions
@@ -179,8 +252,124 @@ public sealed class MeshClient : IAsyncDisposable, IDisposable
         ReadOnlyMemory<byte> payload = default,
         IEnumerable<string>? inputs = null,
         IEnumerable<string>? constraints = null,
+        Priority? priority = null,
         CancellationToken cancellationToken = default)
-        => SubmitAsync(kind, payload, inputs, constraints, module: null, cancellationToken);
+        => SubmitAsync(kind, payload, inputs, constraints, module: null, priority, cancellationToken);
+
+    /// <summary>Runs several tasks, each after the ones it depends on.</summary>
+    /// <remarks>
+    /// <para>
+    /// A non-null <paramref name="run"/> names the run, so submitting the same
+    /// workflow again resumes it rather than repeating it: steps that already
+    /// finished are skipped when their output is still on a node. Needs a
+    /// controller started with <c>checkpoint_path</c>.
+    /// </para>
+    /// <para>
+    /// Reusing a name for a <em>different</em> workflow throws rather than
+    /// resuming. Skipping step 3 because another graph's step 3 finished is the
+    /// one failure here that answers confidently and wrongly.
+    /// </para>
+    /// </remarks>
+    public async Task<WorkflowResult> WorkflowAsync(
+        IEnumerable<Step> steps,
+        string? run = null,
+        CancellationToken cancellationToken = default)
+    {
+        var encoded = steps.Select(step => new Dictionary<string, object?>
+        {
+            ["kind"] = step.Kind,
+            ["payload"] = Convert.ToBase64String(step.Payload.Span),
+            ["depends_on"] = step.DependsOn?.ToArray() ?? Array.Empty<int>(),
+            ["inputs"] = step.Inputs?.ToArray() ?? Array.Empty<string>(),
+            ["constraints"] = step.Constraints?.ToArray() ?? Array.Empty<string>(),
+            ["module"] = step.Module,
+        }).ToArray();
+
+        var request = new Dictionary<string, object?>
+        {
+            ["type"] = "workflow",
+            ["steps"] = encoded,
+        };
+        if (run is not null)
+        {
+            request["run"] = run;
+        }
+
+        var frame = await RequestAsync(request, cancellationToken).ConfigureAwait(false);
+        Expect(frame, "workflow");
+
+        var outcomes = new List<StepOutcome>();
+        if (frame.TryGetProperty("steps", out var array) && array.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var step in array.EnumerateArray())
+            {
+                outcomes.Add(new StepOutcome(
+                    (int)(Number(step, "step") ?? 0),
+                    Text(step, "node_id") ?? "",
+                    step.TryGetProperty("success", out var ok) && ok.ValueKind == JsonValueKind.True,
+                    Convert.FromBase64String(Text(step, "output") ?? ""),
+                    Number(step, "duration_ms") ?? 0,
+                    Text(step, "error")));
+            }
+        }
+
+        return new WorkflowResult(
+            outcomes,
+            Integers(frame, "skipped"),
+            Integers(frame, "resumed"),
+            frame.TryGetProperty("success", out var success) && success.ValueKind == JsonValueKind.True);
+    }
+
+    /// <summary>The last few tasks that finished anywhere in the mesh.</summary>
+    /// <remarks>
+    /// Not only the ones this connection submitted: a task somebody else ran is
+    /// exactly the interesting case. The preview is the front of the output,
+    /// not the output — results stay on the node that produced them.
+    /// </remarks>
+    public async Task<IReadOnlyList<FinishedTask>> RecentAsync(
+        int limit = 20,
+        CancellationToken cancellationToken = default)
+    {
+        var frame = await RequestAsync(
+            new Dictionary<string, object?> { ["type"] = "recent", ["limit"] = limit },
+            cancellationToken).ConfigureAwait(false);
+        Expect(frame, "recent");
+
+        var tasks = new List<FinishedTask>();
+        if (!frame.TryGetProperty("tasks", out var array) || array.ValueKind != JsonValueKind.Array)
+        {
+            return tasks;
+        }
+
+        foreach (var task in array.EnumerateArray())
+        {
+            tasks.Add(new FinishedTask(
+                Text(task, "task_id") ?? "",
+                Text(task, "kind") ?? "",
+                Text(task, "node_id") ?? "",
+                task.TryGetProperty("success", out var ok) && ok.ValueKind == JsonValueKind.True,
+                Number(task, "duration_ms") ?? 0,
+                (long)(Number(task, "output_bytes") ?? 0),
+                Text(task, "preview") ?? "",
+                Number(task, "seconds_ago") ?? 0));
+        }
+        return tasks;
+    }
+
+    /// <summary>What the mesh has moved, saved, run and queued.</summary>
+    /// <remarks>
+    /// Returned as the controller sent it rather than as a record: this is a
+    /// dashboard feed that grows fields, and a client receiving one it does not
+    /// know about should see it rather than lose it.
+    /// </remarks>
+    public async Task<JsonElement> StatsAsync(CancellationToken cancellationToken = default)
+    {
+        var frame = await RequestAsync(
+            new Dictionary<string, object?> { ["type"] = "stats" },
+            cancellationToken).ConfigureAwait(false);
+        Expect(frame, "stats");
+        return frame;
+    }
 
     /// <summary>Runs a WebAssembly module previously published.</summary>
     public Task<TaskResult> RunWasmAsync(
@@ -188,8 +377,9 @@ public sealed class MeshClient : IAsyncDisposable, IDisposable
         ReadOnlyMemory<byte> payload = default,
         IEnumerable<string>? inputs = null,
         IEnumerable<string>? constraints = null,
+        Priority? priority = null,
         CancellationToken cancellationToken = default)
-        => SubmitAsync("wasm", payload, inputs, constraints, moduleId, cancellationToken);
+        => SubmitAsync("wasm", payload, inputs, constraints, moduleId, priority, cancellationToken);
 
     /// <summary>Lists the nodes currently in the mesh.</summary>
     public async Task<IReadOnlyList<NodeSummary>> NodesAsync(
@@ -223,7 +413,12 @@ public sealed class MeshClient : IAsyncDisposable, IDisposable
                 (int)(Number(node, "cpu_cores") ?? 0),
                 Number(node, "cpu_usage") ?? 0,
                 Number(node, "memory_usage") ?? 0,
-                labels));
+                labels,
+                Text(node, "address") ?? "",
+                (int)(Number(node, "datasets_held") ?? 0),
+                (long)(Number(node, "bytes_held") ?? 0),
+                !node.TryGetProperty("connected", out var connected)
+                    || connected.ValueKind != JsonValueKind.False));
         }
         return nodes;
     }
@@ -248,6 +443,7 @@ public sealed class MeshClient : IAsyncDisposable, IDisposable
         IEnumerable<string>? inputs,
         IEnumerable<string>? constraints,
         string? module,
+        Priority? priority,
         CancellationToken cancellationToken)
     {
         var frame = await RequestAsync(new Dictionary<string, object?>
@@ -258,6 +454,7 @@ public sealed class MeshClient : IAsyncDisposable, IDisposable
             ["inputs"] = inputs?.ToArray() ?? Array.Empty<string>(),
             ["constraints"] = constraints?.ToArray() ?? Array.Empty<string>(),
             ["module"] = module,
+            ["priority"] = priority?.ToString().ToLowerInvariant(),
         }, cancellationToken).ConfigureAwait(false);
 
         Expect(frame, "result");
@@ -354,6 +551,23 @@ public sealed class MeshClient : IAsyncDisposable, IDisposable
         if (Text(frame, "type") == type) return;
         throw new MeshException(
             Text(frame, "message") ?? $"expected {type}, got {Text(frame, "type")}");
+    }
+
+    /// <summary>Reads a JSON array of numbers, which is how step indices arrive.</summary>
+    private static IReadOnlyList<int> Integers(JsonElement frame, string name)
+    {
+        var out_ = new List<int>();
+        if (frame.TryGetProperty(name, out var array) && array.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var entry in array.EnumerateArray())
+            {
+                if (entry.TryGetInt32(out var value))
+                {
+                    out_.Add(value);
+                }
+            }
+        }
+        return out_;
     }
 
     private static string? Text(JsonElement frame, string name) =>

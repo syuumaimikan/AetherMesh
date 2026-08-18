@@ -1,6 +1,6 @@
-phase=examples-web-and-software
+phase=hardening-and-sdk-parity
 status=complete
-next=A4-quic, A20-A23, SDK catch-up for go/java/dotnet
+next=A4-quic (see note), A20-A23
 
 # Working notes for whoever picks this up next. Not documentation — the READMEs
 # and docs/ are. This is the stuff that would otherwise have to be rediscovered.
@@ -93,6 +93,29 @@ completed:
   locality=1.0 -> 1 node, 36 ms, 1.0x. locality=0.0 -> 4 nodes, 13 ms, 2.7x.
   In A9 that same comparison showed no difference at all, because there was
   never a second task in flight. Docs corrected in three places.
+
+- panic hardening + SDK parity for go/java/dotnet:
+
+  35 Mutex sites used .expect("... poisoned"), so ONE panic anywhere made every
+  later lock panic too - a controller that stops for good because one request
+  went wrong. aether_core::lock() recovers via into_inner(). Safe here because
+  the maps behind these locks have no invariant spanning two entries; the
+  reasoning is in the module because it would be the WRONG call for state where
+  a partial update is meaningless.
+
+  Three reachable panics fixed: a panicking workflow step took the dispatcher
+  with it (FlowError::Lost now), publish() unwrapped a store read that a
+  bounded store could lose, two unreachable!() in the file that parses client
+  input. 49 non-test panic sites -> 10, and the 10 left are invariants checked
+  a few lines above.
+
+  Go/Java/.NET SDKs: workflow+run, recent, stats, priority, node fields. ALL
+  THREE VERIFIED LIVE (go run / javac+java / dotnet run) against a 2-agent
+  mesh - resume [0,1] on the second submission, wrong-workflow refusal, and
+  recent() showing another client's tasks. Each has a CheckAll example so the
+  README tables cannot drift.
+
+  Toolchains all present on this machine: go 1.26, java 21, dotnet 10.
 
 - examples 14-18 (web x2, software x3) + a real bug they found:
 
@@ -348,9 +371,8 @@ A14 OTel, A17-A23, A24-A26 bench
   survivable rather than fixing it; concurrent dispatch needs Controller to
   stop being &mut-per-task.
 
-- go/java/dotnet SDKs still ignore the newer NodeSummary fields and have no
-  workflow()/stats()/recent(). Python and TypeScript are done; the rest is the
-  same mechanical change.
+- all five SDKs are at parity with the client API as of this phase, each with
+  a CheckAll example run against a live mesh.
 
 ## Open work
 

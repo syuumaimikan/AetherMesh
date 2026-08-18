@@ -81,7 +81,14 @@ the machine trust store will not have it.
 | `PublishAsync(bytes)` / `PublishFileAsync(path)` | `Published(DataId, SizeBytes)` |
 | `RunAsync(kind, payload, inputs, constraints, ct)` | `TaskResult` — built-in `echo`, `hash`, `cpu` |
 | `RunWasmAsync(moduleId, payload, inputs, constraints, ct)` | `TaskResult` |
-| `NodesAsync(ct)` | `IReadOnlyList<NodeSummary>`, each with its `Labels` |
+| `RunAsync(kind, payload, inputs, constraints, priority, ct)` | `TaskResult`, saying how urgently it wants a node |
+| `WorkflowAsync(steps, run, ct)` | `WorkflowResult` — steps that depend on each other; `run` resumes |
+| `NodesAsync(ct)` | `IReadOnlyList<NodeSummary>` — labels, `DatasetsHeld`, `Connected`, … |
+| `RecentAsync(limit, ct)` | `IReadOnlyList<FinishedTask>` — what the *mesh* finished lately |
+| `StatsAsync(ct)` | traffic, counters, queue, as the controller sent them |
+
+[`Examples/CheckAll`](Examples/CheckAll) exercises all of it against a running
+mesh, which is how the table above is kept honest.
 
 A `TaskResult` carries `TaskId`, `NodeId`, `Success`, `Output`, `DurationMs`,
 and `Error`. A task that ran and failed comes back with `Success == false` and an
