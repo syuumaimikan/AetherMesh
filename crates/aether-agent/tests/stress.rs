@@ -16,7 +16,7 @@ use aether_agent::{AgentClient, MetricsCollector};
 use aether_controller::{Controller, MeshState, NetworkTransport, SecurityConfig, bind, serve};
 use aether_core::task::kind;
 use aether_core::{NodeId, NodeInfo, Task};
-use aether_scheduler::{AdvancedScheduler, DataCatalog};
+use aether_scheduler::AdvancedScheduler;
 use tokio::task::JoinSet;
 
 /// A controller and `nodes` real agents over real sockets.
