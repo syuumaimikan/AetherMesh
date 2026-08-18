@@ -10,7 +10,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line as TextLine, Span};
 use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Sparkline, Table, Wrap};
 
-use crate::app::{App, Connection, Field, LineKind, Mode, bytes, short};
+use crate::app::{App, Field, LineKind, LinkState, Mode, bytes, short};
 
 const ACCENT: Color = Color::Cyan;
 const GOOD: Color = Color::Green;
@@ -45,9 +45,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
 
 fn status(frame: &mut Frame, area: Rect, app: &App) {
     let (mark, text, colour) = match &app.connection {
-        Connection::Connecting => ("○", "connecting".to_string(), Color::Yellow),
-        Connection::Live => ("●", "live".to_string(), GOOD),
-        Connection::Lost(reason) => ("✕", format!("lost — {reason}"), BAD),
+        LinkState::Connecting => ("○", "connecting".to_string(), Color::Yellow),
+        LinkState::Live => ("●", "live".to_string(), GOOD),
+        LinkState::Lost(reason) => ("✕", format!("lost — {reason}"), BAD),
     };
 
     let line = TextLine::from(vec![
@@ -486,7 +486,8 @@ fn centred(area: Rect, width: u16, height: u16) -> Rect {
 mod tests {
     use std::time::{Duration, Instant};
 
-    use aether_controller::client::{ClientResponse, NodeSummary, TrafficSummary};
+    use aether_controller::client::{NodeSummary, TrafficSummary};
+    use aether_controller::connection::Stats;
     use aether_controller::observability::MetricsSnapshot;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -498,7 +499,7 @@ mod tests {
         let start = Instant::now();
 
         app.apply_stats(
-            ClientResponse::Stats {
+            Stats {
                 traffic: TrafficSummary {
                     bytes_sent: 4_127,
                     bytes_uncompressed: 1_048_576,
@@ -543,7 +544,7 @@ mod tests {
             connected: true,
         };
         node.labels.insert("kind".to_string(), "arm".to_string());
-        app.apply_nodes(ClientResponse::Nodes { nodes: vec![node] });
+        app.apply_nodes(vec![node]);
         app
     }
 

@@ -350,6 +350,46 @@ python bench/comparison/compare.py --tasks 100 --workers 3
 
 **What this does not show.** The task bodies are not identical — Dask runs a Python callable hashing with `hashlib.blake2b`, AetherMesh runs its Rust BLAKE3 built-in — so the dataset rows mix framework cost with a language difference, and the **overhead row is the fair framework-to-framework number**. Dask also does far more than AetherMesh: arbitrary Python callables, task graphs, dataframes, spilling, a dashboard. And this is loopback on one machine, not a network. Methodology and full caveats: [`docs/benchmarks.md`](docs/benchmarks.md).
 
+### On real sockets
+
+Everything above and below runs a mesh inside one process. This one connects to a controller that is actually running, as an ordinary client, and measures what crossed the wire:
+
+```bash
+cargo run -p aether-benchmark -- network --tasks 20 --dataset-bytes 4194304
+```
+
+```
+2 node(s):
+  syuum            127.0.0.1:7001         16 cores · rtt 0.3 ms · link unmeasured
+  syuum            127.0.0.1:7002         16 cores · rtt 0.1 ms · link unmeasured
+
+  Every node is on loopback. This measures the software, not a network:
+  the transfer saving is real, the latency and bandwidth are not.
+
+20 tasks over a 4.0 MiB dataset (seed 1787032028481393700)
+
+                         naive    aethermesh
+  bytes sent          80.0 MiB       4.0 MiB
+  wall clock            706 ms         37 ms
+  sends skipped              0            19
+
+  traffic reduction: 95.0 %
+```
+
+The naive side publishes a fresh copy per task, which is what a system that ships data to code does. AetherMesh publishes once: 19 of 20 tasks found the data already there, and the one that did not is the 5 % that remains.
+
+**Pointing this at real machines needs no code change**, only a different address — everything goes through the client API any program would use. Declare the mesh you mean to measure and it refuses to report a number from a different one:
+
+```bash
+cargo run -p aether-benchmark -- network --nodes-config bench/nodes.toml
+```
+```
+Error: expected 3 node(s) but the mesh has 2; a result measured on a
+different mesh is not the result you asked for
+```
+
+The report carries the environment it came from — nodes, addresses, measured latency, OS, seed — and says so in the output when every node is on loopback. It also warns when the run measured nothing: repeat a seed against nodes that still hold the data and you get 0 %, with an explanation rather than a mystery.
+
 ### Against a naive dispatcher
 
 ```bash

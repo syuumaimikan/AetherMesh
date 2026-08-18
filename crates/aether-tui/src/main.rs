@@ -21,9 +21,9 @@ use ratatui::crossterm::terminal::{
 };
 use ratatui::crossterm::{cursor, execute};
 
-use aether_tui::app::{App, Connection, Key, LineKind, Mode, Submission};
-use aether_tui::client::Client;
+use aether_tui::app::{App, Key, LineKind, LinkState, Mode, Submission};
 use aether_tui::ui;
+use aether_tui::{Connection, ConnectionError, SubmitOptions};
 
 /// How long to wait for one reply before calling the controller unresponsive.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
@@ -85,7 +85,7 @@ async fn run(
     mut app: App,
     token: Option<String>,
 ) -> anyhow::Result<()> {
-    let mut client: Option<Client> = None;
+    let mut client: Option<Connection> = None;
     let mut next_poll = Instant::now();
     let mut next_attempt = Instant::now();
 
@@ -95,20 +95,23 @@ async fn run(
         if let Some(submission) = read_key(&mut app)? {
             match client.as_mut() {
                 Some(connection) => {
-                    let reply = connection
-                        .submit(
-                            submission.kind,
-                            submission.payload,
-                            submission.constraints,
-                            submission.priority.to_string(),
-                        )
-                        .await;
-                    match reply {
-                        Ok(response) => app.apply_result(response),
+                    let options = SubmitOptions::default()
+                        .with_constraints(submission.constraints)
+                        .with_priority(submission.priority);
+                    match connection
+                        .submit(&submission.kind, submission.payload, &options)
+                        .await
+                    {
+                        Ok(finished) => app.apply_result(finished),
                         Err(error) => {
                             app.submitting = false;
                             app.push_log(error.to_string(), LineKind::Bad);
-                            client = None;
+                            // A refusal is the controller answering, not the
+                            // link failing; only drop the connection if the
+                            // link itself is what broke.
+                            if !matches!(error, ConnectionError::Refused(_)) {
+                                client = None;
+                            }
                         }
                     }
                 }
@@ -125,10 +128,10 @@ async fn run(
         let now = Instant::now();
         if client.is_none() && now >= next_attempt {
             next_attempt = now + RECONNECT_DELAY;
-            match Client::connect(&app.addr, token.clone(), REQUEST_TIMEOUT).await {
+            match Connection::connect(&app.addr, token.clone(), REQUEST_TIMEOUT).await {
                 Ok(connection) => {
                     client = Some(connection);
-                    app.connection = Connection::Live;
+                    app.connection = LinkState::Live;
                     app.push_log(format!("connected to {}", app.addr), LineKind::Good);
                     next_poll = now;
                 }
@@ -155,11 +158,9 @@ async fn run(
 }
 
 /// One round of questions.
-async fn poll(client: &mut Client, app: &mut App) -> anyhow::Result<()> {
-    let stats = client.stats().await?;
-    app.apply_stats(stats, Instant::now());
-    let nodes = client.nodes().await?;
-    app.apply_nodes(nodes);
+async fn poll(client: &mut Connection, app: &mut App) -> anyhow::Result<()> {
+    app.apply_stats(client.stats().await?, Instant::now());
+    app.apply_nodes(client.nodes().await?);
     Ok(())
 }
 

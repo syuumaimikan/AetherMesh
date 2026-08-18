@@ -5,5 +5,9 @@
 //! person in front of one.
 
 pub mod app;
-pub mod client;
 pub mod ui;
+
+/// The protocol client lives in `aether-controller`, next to the request and
+/// response types it speaks, so a dashboard that has drifted from the
+/// controller is a compile error rather than a wrong number on a screen.
+pub use aether_controller::connection::{Connection, ConnectionError, SubmitOptions};

@@ -1,11 +1,11 @@
-phase=advanced-A3
+phase=advanced-A1
 status=complete
-next=A4-quic-transport
+next=A25-benchmark-reproducibility (or A4 QUIC)
 
 # Working notes for whoever picks this up next. Not documentation — the READMEs
 # and docs/ are. This is the stuff that would otherwise have to be rediscovered.
 
-test counts: 351 default / 404 with tls + cloud-http
+test counts: 376 default / 429 with tls + cloud-http
 
 ## Advanced phases
 
@@ -30,8 +30,17 @@ completed:
   refused; unbounded with timeout_ms=200 -> 45 ran, 255 expired. Controller
   counters matched both exactly.
 
-next: A4 QUIC transport, or A24-A26 benchmark work. A1 (real-network
-benchmark) is still the weakest claim in the repository.
+- A1 real-network benchmark: `aether-benchmark network` connects to a live
+  controller as a client. bench/nodes.toml declares the mesh and the run is
+  refused if it does not match. Report carries the environment and flags
+  loopback-only. Live on 2 agents: 80 MiB naive vs 4 MiB, 95.0 %.
+- aether-controller::connection: the client half of the protocol, shared by
+  the TUI and the benchmark instead of being written twice.
+
+next: A25 (benchmark reproducibility - most of it is done, what is missing is
+a documented procedure) or A4 QUIC. Still nobody has run this on real
+hardware; the benchmark now makes that a nodes.toml away rather than a code
+change, which is the most that can be done from here.
 
 not started: A1 real-network bench, A2/A3 priority queue (no queue exists at
 all — submit dispatches immediately), A4 QUIC, A6 cost, A7 spot, A8/A9 DAG,
@@ -73,6 +82,16 @@ A10/A11 autoscale, A12/A13 checkpoint, A14 OTel, A17-A23, A24-A26 bench
   by anything the agent chooses; an agent told nothing does not back off at all
 - MeshExecutor refuses Python callables rather than running them locally
 - cloud adapters read platform liveness only; utilisation comes from heartbeats
+
+## Traps this repository has already fallen into
+
+- the network benchmark first reported 100 %. The baseline's first task used
+  the same seed as the shared dataset, so it published identical bytes and the
+  second mode found them already on a node. Seeds are now disjoint by
+  construction and a test pins it. If a benchmark number looks too good, it is.
+- the same benchmark is not idempotent against a warm mesh: repeat a seed and
+  the nodes still hold everything, so nothing moves. The seed defaults to
+  something fresh and the report warns when the baseline moved nothing.
 
 ## Follow-ups deferred on purpose
 

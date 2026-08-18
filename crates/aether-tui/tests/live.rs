@@ -12,8 +12,8 @@ use aether_controller::{
 };
 use aether_core::{NodeId, NodeInfo};
 use aether_scheduler::{DataCatalog, LeastLoadedScheduler};
-use aether_tui::app::{App, Connection, Key, LineKind, Mode};
-use aether_tui::client::Client;
+use aether_tui::app::{App, Key, LineKind, LinkState, Mode};
+use aether_tui::{Connection, SubmitOptions};
 
 const TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -48,13 +48,13 @@ async fn controller(token: Option<&str>) -> (String, MeshState) {
 #[tokio::test]
 async fn the_dashboard_reads_a_real_controller() {
     let (addr, _state) = controller(None).await;
-    let mut client = Client::connect(&addr, None, TIMEOUT).await.unwrap();
+    let mut client = Connection::connect(&addr, None, TIMEOUT).await.unwrap();
     let mut app = App::new(addr, Duration::from_secs(1));
 
     app.apply_stats(client.stats().await.unwrap(), Instant::now());
     app.apply_nodes(client.nodes().await.unwrap());
 
-    assert_eq!(app.connection, Connection::Live);
+    assert_eq!(app.connection, LinkState::Live);
     assert_eq!(app.totals.nodes, 1);
     let node = app.selected_node().expect("the registered node");
     assert_eq!(node.hostname, "worker");
@@ -65,7 +65,7 @@ async fn the_dashboard_reads_a_real_controller() {
 #[tokio::test]
 async fn submitting_from_the_dashboard_runs_the_task_and_moves_the_counters() {
     let (addr, _state) = controller(None).await;
-    let mut client = Client::connect(&addr, None, TIMEOUT).await.unwrap();
+    let mut client = Connection::connect(&addr, None, TIMEOUT).await.unwrap();
     let mut app = App::new(addr, Duration::from_secs(1));
     app.apply_nodes(client.nodes().await.unwrap());
 
@@ -80,10 +80,11 @@ async fn submitting_from_the_dashboard_runs_the_task_and_moves_the_counters() {
 
     let result = client
         .submit(
-            submission.kind,
+            &submission.kind,
             submission.payload,
-            submission.constraints,
-            submission.priority.to_string(),
+            &SubmitOptions::default()
+                .with_constraints(submission.constraints)
+                .with_priority(submission.priority),
         )
         .await
         .unwrap();
@@ -98,32 +99,40 @@ async fn submitting_from_the_dashboard_runs_the_task_and_moves_the_counters() {
 #[tokio::test]
 async fn a_task_no_node_satisfies_is_reported_rather_than_silently_dropped() {
     let (addr, _state) = controller(None).await;
-    let mut client = Client::connect(&addr, None, TIMEOUT).await.unwrap();
+    let mut client = Connection::connect(&addr, None, TIMEOUT).await.unwrap();
     let mut app = App::new(addr, Duration::from_secs(1));
 
     app.form.constraints = "kind=gpu".to_string();
     let submission = app.edit_form(Key::Enter).expect("a valid form");
 
-    let result = client
+    let outcome = client
         .submit(
-            submission.kind,
+            &submission.kind,
             submission.payload,
-            submission.constraints,
-            submission.priority.to_string(),
+            &SubmitOptions::default()
+                .with_constraints(submission.constraints)
+                .with_priority(submission.priority),
         )
-        .await
-        .unwrap();
-    app.apply_result(result);
+        .await;
 
-    // The operator asked for a GPU and there is none. That has to be visible.
+    // The operator asked for a GPU and there is none. The controller says so,
+    // and the dashboard shows it rather than a task that silently vanished.
+    let message = match outcome {
+        Err(error) => error.to_string(),
+        Ok(finished) => panic!("expected a refusal, got {finished:?}"),
+    };
+    app.submitting = false;
+    app.push_log(message, LineKind::Bad);
+
     let line = app.log.front().expect("a line");
-    assert_eq!(line.kind, LineKind::Bad, "{}", line.text);
+    assert_eq!(line.kind, LineKind::Bad);
+    assert!(line.text.contains("no node available"), "{}", line.text);
 }
 
 #[tokio::test]
 async fn traffic_the_controller_reports_becomes_a_rate_on_screen() {
     let (addr, state) = controller(None).await;
-    let mut client = Client::connect(&addr, None, TIMEOUT).await.unwrap();
+    let mut client = Connection::connect(&addr, None, TIMEOUT).await.unwrap();
     let mut app = App::new(addr, Duration::from_secs(1));
 
     let start = Instant::now();
@@ -150,16 +159,16 @@ async fn traffic_the_controller_reports_becomes_a_rate_on_screen() {
 async fn a_controller_that_wants_a_token_refuses_a_dashboard_without_one() {
     let (addr, _state) = controller(Some("s3cret")).await;
 
-    let refused = Client::connect(&addr, None, TIMEOUT).await;
+    let refused = Connection::connect(&addr, None, TIMEOUT).await;
     assert!(refused.is_err(), "an open dashboard on a closed mesh");
 
-    let accepted = Client::connect(&addr, Some("s3cret".to_string()), TIMEOUT).await;
+    let accepted = Connection::connect(&addr, Some("s3cret".to_string()), TIMEOUT).await;
     assert!(accepted.is_ok());
 }
 
 #[tokio::test]
 async fn a_controller_that_is_not_there_is_an_error_not_a_hang() {
     // Port 1 on loopback refuses immediately on every platform this runs on.
-    let outcome = Client::connect("127.0.0.1:1", None, Duration::from_millis(500)).await;
+    let outcome = Connection::connect("127.0.0.1:1", None, Duration::from_millis(500)).await;
     assert!(outcome.is_err());
 }

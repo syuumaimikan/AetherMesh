@@ -21,6 +21,13 @@ from 0.1.0 onward. Until then, `main` is the release.
   Dispatch was strictly first-come, first-served before this — and, since one
   task is dispatched at a time, a long backlog meant urgent work waited behind
   all of it.
+- **A benchmark that measures a mesh which is actually running**
+  (`aether-benchmark network`). Everything before it simulated a mesh in one
+  process, where the "bandwidth" was a number somebody typed. This one connects
+  as an ordinary client, so pointing it at real machines needs an address
+  rather than a code change. It records the environment it measured, says so
+  when every node is on loopback, and refuses to report a number from a mesh
+  that does not match the `nodes.toml` you declared.
 - **Queue policies**: `max_queue_size`, `queue_timeout_secs`, a per-task
   `timeout_ms`, and a rejection policy of `reject`, `drop_oldest`, or
   `drop_lowest_priority`. All off by default. Whatever the queue decides, the

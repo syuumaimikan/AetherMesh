@@ -3,6 +3,7 @@
 pub mod cache;
 pub mod client;
 pub mod config;
+pub mod connection;
 pub mod connections;
 pub mod dispatch;
 pub mod health;
@@ -26,6 +27,7 @@ pub use client::{
     run_dispatcher, run_dispatcher_with, serve_clients,
 };
 pub use config::{ConfigError, ControllerConfig};
+pub use connection::{Connection, ConnectionError, Finished, Published, Stats, SubmitOptions};
 pub use connections::Connections;
 pub use dispatch::{Controller, DispatchError, RetryPolicy, TaskTransport};
 pub use health::{DEFAULT_CHECK_INTERVAL, DEFAULT_HEARTBEAT_TIMEOUT, evict_stale_nodes};

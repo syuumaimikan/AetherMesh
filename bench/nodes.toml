@@ -1,0 +1,33 @@
+# The mesh a benchmark result is supposed to describe.
+#
+#   cargo run -p aether-benchmark -- network --nodes-config bench/nodes.toml
+#
+# Declaring it is the point. Without this file the benchmark measures whatever
+# happens to be registered, which is how a one-node number ends up published as
+# a three-node one. With it, a mesh that does not match is refused rather than
+# measured.
+
+# Controller client API. --controller overrides this.
+controller = "127.0.0.1:7100"
+
+# Shared secret, if the controller wants one. Prefer AETHERMESH_TOKEN.
+# token = "change-me"
+
+# Every node that should be present. `hostname` is what the agent registers
+# under — its machine name unless it was told otherwise. Omit it to match on
+# `name` instead. `labels` are checked too: `kind=gpu` demands that exact value,
+# a bare `region` only demands the label exists.
+
+[[nodes]]
+name = "local"
+# hostname = "desktop"
+
+[[nodes]]
+name = "raspberry-pi"
+# hostname = "rpi4"
+# labels = ["arch=arm64"]
+
+[[nodes]]
+name = "cloud"
+# hostname = "vm-eu-west-1"
+# labels = ["region=eu-west"]

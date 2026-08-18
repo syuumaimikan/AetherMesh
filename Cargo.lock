@@ -48,7 +48,9 @@ dependencies = [
  "clap",
  "serde",
  "serde_json",
+ "thiserror",
  "tokio",
+ "toml",
 ]
 
 [[package]]

@@ -7,7 +7,8 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
-use aether_controller::client::{ClientResponse, NodeSummary, TrafficSummary};
+use aether_controller::client::{NodeSummary, TrafficSummary};
+use aether_controller::connection::{Finished, Stats};
 use aether_controller::observability::{MetricsSnapshot, QueueSnapshot};
 use aether_core::Priority;
 
@@ -23,7 +24,7 @@ const MAX_POLL: Duration = Duration::from_secs(10);
 
 /// Whether the controller is answering.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Connection {
+pub enum LinkState {
     Connecting,
     Live,
     /// Lost, with the reason. The dashboard keeps showing the last good numbers
@@ -218,7 +219,7 @@ impl Throughput {
 pub struct App {
     pub addr: String,
     pub poll: Duration,
-    pub connection: Connection,
+    pub connection: LinkState,
     pub traffic: Option<TrafficSummary>,
     pub mesh: Option<MetricsSnapshot>,
     pub queue: Option<QueueSnapshot>,
@@ -242,7 +243,7 @@ impl App {
         Self {
             addr,
             poll: poll.clamp(MIN_POLL, MAX_POLL),
-            connection: Connection::Connecting,
+            connection: LinkState::Connecting,
             traffic: None,
             mesh: None,
             queue: None,
@@ -259,92 +260,63 @@ impl App {
         }
     }
 
-    /// Folds a `Stats` reply into the view.
-    pub fn apply_stats(&mut self, response: ClientResponse, at: Instant) {
-        match response {
-            ClientResponse::Stats {
-                traffic,
-                mesh,
-                queue,
-                nodes,
-                nodes_connected,
-                datasets,
-                dataset_bytes,
-            } => {
-                self.throughput.record(traffic.bytes_sent, at);
-                self.traffic = Some(traffic);
-                self.mesh = Some(mesh);
-                self.queue = Some(queue);
-                self.totals = Totals {
-                    nodes,
-                    nodes_connected,
-                    datasets,
-                    dataset_bytes,
-                };
-                self.connection = Connection::Live;
-            }
-            ClientResponse::Error { message } => self.lose(message),
-            other => self.lose(format!("unexpected reply: {}", name_of(&other))),
-        }
+    /// Folds a stats reading into the view.
+    pub fn apply_stats(&mut self, stats: Stats, at: Instant) {
+        self.throughput.record(stats.traffic.bytes_sent, at);
+        self.traffic = Some(stats.traffic);
+        self.mesh = Some(stats.mesh);
+        self.queue = Some(stats.queue);
+        self.totals = Totals {
+            nodes: stats.nodes,
+            nodes_connected: stats.nodes_connected,
+            datasets: stats.datasets,
+            dataset_bytes: stats.dataset_bytes,
+        };
+        self.connection = LinkState::Live;
     }
 
-    /// Folds a `Nodes` reply into the view, keeping the selection valid.
-    pub fn apply_nodes(&mut self, response: ClientResponse) {
-        match response {
-            ClientResponse::Nodes { mut nodes } => {
-                // Stable order, so a node does not jump under the cursor when
-                // the controller happens to iterate its map differently.
-                nodes.sort_by(|a, b| a.hostname.cmp(&b.hostname).then(a.node_id.cmp(&b.node_id)));
-                self.nodes = nodes;
-                self.clamp_selection();
-                self.connection = Connection::Live;
-            }
-            ClientResponse::Error { message } => self.lose(message),
-            other => self.lose(format!("unexpected reply: {}", name_of(&other))),
-        }
+    /// Folds a node listing into the view, keeping the selection valid.
+    pub fn apply_nodes(&mut self, mut nodes: Vec<NodeSummary>) {
+        // Stable order, so a node does not jump under the cursor when the
+        // controller happens to iterate its map differently.
+        nodes.sort_by(|a, b| a.hostname.cmp(&b.hostname).then(a.node_id.cmp(&b.node_id)));
+        self.nodes = nodes;
+        self.clamp_selection();
+        self.connection = LinkState::Live;
     }
 
     /// Records that the controller stopped answering, keeping the last numbers.
     pub fn lose(&mut self, reason: impl Into<String>) {
         let reason = reason.into();
-        if self.connection != Connection::Lost(reason.clone()) {
+        if self.connection != LinkState::Lost(reason.clone()) {
             self.push_log(format!("controller: {reason}"), LineKind::Bad);
         }
-        self.connection = Connection::Lost(reason);
+        self.connection = LinkState::Lost(reason);
     }
 
     /// Turns a task result into a log line.
-    pub fn apply_result(&mut self, response: ClientResponse) {
+    pub fn apply_result(&mut self, finished: Finished) {
         self.submitting = false;
-        match response {
-            ClientResponse::Result {
-                node_id,
-                success: true,
-                duration_ms,
-                ..
-            } => self.push_log(
-                format!("ran on {} in {duration_ms:.1} ms", short(&node_id)),
+        let where_it_ran = short(&finished.node_id).to_string();
+
+        if finished.success {
+            self.push_log(
+                format!("ran on {where_it_ran} in {:.1} ms", finished.duration_ms),
                 LineKind::Good,
-            ),
-            ClientResponse::Result {
-                node_id,
-                error,
-                duration_ms,
-                ..
-            } => self.push_log(
-                format!(
-                    "failed on {} after {duration_ms:.1} ms: {}",
-                    short(&node_id),
-                    error.unwrap_or_else(|| "no reason given".to_string())
-                ),
-                LineKind::Bad,
-            ),
-            ClientResponse::Error { message } => self.push_log(message, LineKind::Bad),
-            other => self.push_log(
-                format!("unexpected reply: {}", name_of(&other)),
-                LineKind::Bad,
-            ),
+            );
+            return;
         }
+
+        self.push_log(
+            format!(
+                "failed on {where_it_ran} after {:.1} ms: {}",
+                finished.duration_ms,
+                finished
+                    .error
+                    .unwrap_or_else(|| "no reason given".to_string())
+            ),
+            LineKind::Bad,
+        );
     }
 
     pub fn push_log(&mut self, text: impl Into<String>, kind: LineKind) {
@@ -501,17 +473,6 @@ pub fn short(id: &str) -> &str {
     id.split('-').next().unwrap_or(id)
 }
 
-fn name_of(response: &ClientResponse) -> &'static str {
-    match response {
-        ClientResponse::Welcome { .. } => "welcome",
-        ClientResponse::Published { .. } => "published",
-        ClientResponse::Result { .. } => "result",
-        ClientResponse::Nodes { .. } => "nodes",
-        ClientResponse::Stats { .. } => "stats",
-        ClientResponse::Error { .. } => "error",
-    }
-}
-
 /// Bytes as something a person reads at a glance.
 pub fn bytes(value: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
@@ -600,14 +561,10 @@ mod tests {
     #[test]
     fn a_node_leaving_does_not_leave_the_cursor_past_the_end() {
         let mut app = app();
-        app.apply_nodes(ClientResponse::Nodes {
-            nodes: vec![summary("a"), summary("b"), summary("c")],
-        });
+        app.apply_nodes(vec![summary("a"), summary("b"), summary("c")]);
         app.selected = 2;
 
-        app.apply_nodes(ClientResponse::Nodes {
-            nodes: vec![summary("a")],
-        });
+        app.apply_nodes(vec![summary("a")]);
 
         assert_eq!(app.selected, 0);
         assert!(app.selected_node().is_some());
@@ -616,9 +573,7 @@ mod tests {
     #[test]
     fn nodes_are_shown_in_a_stable_order() {
         let mut app = app();
-        app.apply_nodes(ClientResponse::Nodes {
-            nodes: vec![summary("rpi4"), summary("desktop"), summary("cloud")],
-        });
+        app.apply_nodes(vec![summary("rpi4"), summary("desktop"), summary("cloud")]);
 
         let order: Vec<_> = app.nodes.iter().map(|node| node.hostname.clone()).collect();
         assert_eq!(order, ["cloud", "desktop", "rpi4"]);
@@ -627,9 +582,7 @@ mod tests {
     #[test]
     fn selection_wraps_in_both_directions() {
         let mut app = app();
-        app.apply_nodes(ClientResponse::Nodes {
-            nodes: vec![summary("a"), summary("b")],
-        });
+        app.apply_nodes(vec![summary("a"), summary("b")]);
 
         app.select_previous();
         assert_eq!(app.selected, 1, "wrapping backwards from the first row");
@@ -649,16 +602,14 @@ mod tests {
     #[test]
     fn a_lost_controller_keeps_the_last_numbers_on_screen() {
         let mut app = app();
-        app.apply_nodes(ClientResponse::Nodes {
-            nodes: vec![summary("worker")],
-        });
+        app.apply_nodes(vec![summary("worker")]);
 
         app.lose("connection reset");
 
         // Blanking the table would make "the mesh went quiet" look exactly
         // like "every node left", which are different emergencies.
         assert_eq!(app.nodes.len(), 1);
-        assert!(matches!(app.connection, Connection::Lost(_)));
+        assert!(matches!(app.connection, LinkState::Lost(_)));
     }
 
     #[test]
@@ -735,7 +686,7 @@ mod tests {
         let mut app = app();
         let mut node = summary("gpu-box");
         node.labels.insert("kind".to_string(), "gpu".to_string());
-        app.apply_nodes(ClientResponse::Nodes { nodes: vec![node] });
+        app.apply_nodes(vec![node]);
 
         app.open_form();
 
@@ -761,11 +712,10 @@ mod tests {
     fn a_result_says_where_the_task_actually_ran() {
         let mut app = app();
         app.submitting = true;
-        app.apply_result(ClientResponse::Result {
-            task_id: "task".to_string(),
+        app.apply_result(Finished {
             node_id: "4f3cb68b-0000-1111".to_string(),
             success: true,
-            output: String::new(),
+            output: Vec::new(),
             duration_ms: 6.7,
             error: None,
         });
@@ -777,13 +727,19 @@ mod tests {
     }
 
     #[test]
-    fn a_refused_task_is_reported_rather_than_looking_like_success() {
+    fn a_task_that_ran_and_failed_is_reported_rather_than_looking_like_success() {
         let mut app = app();
-        app.apply_result(ClientResponse::Error {
-            message: "no node available".to_string(),
+        app.apply_result(Finished {
+            node_id: "4f3cb68b-0000-1111".to_string(),
+            success: false,
+            output: Vec::new(),
+            duration_ms: 1.0,
+            error: Some("unknown task kind".to_string()),
         });
 
-        assert_eq!(app.log.front().map(|line| line.kind), Some(LineKind::Bad));
+        let line = app.log.front().expect("a line");
+        assert_eq!(line.kind, LineKind::Bad);
+        assert!(line.text.contains("unknown task kind"), "{}", line.text);
     }
 
     #[test]

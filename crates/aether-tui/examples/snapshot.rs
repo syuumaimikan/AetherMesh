@@ -2,8 +2,8 @@
 //! Run with: cargo run -p aether-tui --example snapshot
 use std::time::{Duration, Instant};
 
+use aether_tui::Connection;
 use aether_tui::app::App;
-use aether_tui::client::Client;
 use aether_tui::ui;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
@@ -11,7 +11,7 @@ use ratatui::backend::TestBackend;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let addr = std::env::args().nth(1).unwrap_or("127.0.0.1:7100".into());
-    let mut client = Client::connect(&addr, None, Duration::from_secs(5)).await?;
+    let mut client = Connection::connect(&addr, None, Duration::from_secs(5)).await?;
     let mut app = App::new(addr, Duration::from_secs(1));
 
     let start = Instant::now();

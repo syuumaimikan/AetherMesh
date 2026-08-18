@@ -1,6 +1,10 @@
 //! Measures AetherMesh latency, throughput, and transferred bytes, and compares
 //! it against a baseline that has none of the optimisations turned on.
 //!
+//! The measurements here run in one process against a simulated mesh, which is
+//! right for scheduler arithmetic and worthless as evidence about a network.
+//! [`network`] measures a controller that is actually running, over sockets.
+//!
 //! Both sides run against the same in-process mesh with the same real message
 //! encoding and the same task executor, so the difference is the optimisation
 //! layer and nothing else.
@@ -451,3 +455,5 @@ mod tests {
         assert!((parsed.avg_latency_ms - report.avg_latency_ms).abs() < 1e-9);
     }
 }
+
+pub mod network;

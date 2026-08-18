@@ -315,6 +315,34 @@ aethermesh_cpu_usage_mean 0.007223892025649548
 
 方法論と注意点の全文: [`docs/benchmarks.md`](docs/benchmarks.md)
 
+### 実ソケット上での計測
+
+上下のベンチマークは 1 プロセス内にメッシュを作って測っています。これは**実際に動いているコントローラ**にクライアントとして接続し、線を通った量を測ります。
+
+```bash
+cargo run -p aether-benchmark -- network --tasks 20 --dataset-bytes 4194304
+```
+
+```
+                         naive    aethermesh
+  bytes sent          80.0 MiB       4.0 MiB
+  wall clock            706 ms         37 ms
+  sends skipped              0            19
+
+  traffic reduction: 95.0 %
+```
+
+naive 側はタスクごとに新しいコピーを publish します（コードのところへデータを運ぶ実装がやること）。AetherMesh 側は 1 回だけ publish し、20 本中 19 本は既にデータがある場所で走りました。残りの 1 本が 5 % です。
+
+**実機に向けるのにコード変更は要りません。**アドレスを変えるだけです。すべて通常のクライアント API を通っています。測るべきメッシュを宣言しておけば、違うメッシュの数字を報告することを拒否します。
+
+```
+Error: expected 3 node(s) but the mesh has 2; a result measured on a
+different mesh is not the result you asked for
+```
+
+レポートには測定環境（ノード・アドレス・実測レイテンシ・OS・シード）が入り、全ノードが loopback のときはその旨を出力に書きます。シードを使い回して温まったメッシュで測ると 0 % になりますが、そのときは理由を添えて警告します。
+
 ### 素朴なディスパッチャとの比較
 
 ```bash
