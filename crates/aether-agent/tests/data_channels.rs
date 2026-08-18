@@ -67,7 +67,7 @@ impl Mesh {
     }
 
     fn controller(&self, chunk_size: usize) -> Controller<LocalityScheduler, NetworkTransport> {
-        let mut controller = Controller::new(
+        let controller = Controller::new(
             LocalityScheduler::new(self.state.catalog.clone()),
             NetworkTransport::new(self.state.connections.clone())
                 .with_timeout(Duration::from_secs(10)),
@@ -76,7 +76,7 @@ impl Mesh {
         .with_chunk_size(chunk_size);
 
         for info in self.state.registry.lock().unwrap().nodes() {
-            controller.registry_mut().register(info);
+            controller.register(info);
         }
         controller
     }
@@ -91,7 +91,7 @@ fn dataset(size: usize) -> Vec<u8> {
 async fn a_dataset_split_across_four_connections_arrives_intact() {
     let mesh = Mesh::start().await;
     let node_id = mesh.attach_agent(4).await;
-    let mut controller = mesh.controller(64 * 1024);
+    let controller = mesh.controller(64 * 1024);
 
     let data = dataset(1024 * 1024);
     let descriptor = controller.publish(data.clone());
@@ -114,7 +114,7 @@ async fn a_dataset_split_across_four_connections_arrives_intact() {
 async fn the_same_transfer_works_without_extra_connections() {
     let mesh = Mesh::start().await;
     mesh.attach_agent(0).await;
-    let mut controller = mesh.controller(64 * 1024);
+    let controller = mesh.controller(64 * 1024);
 
     let data = dataset(256 * 1024);
     let descriptor = controller.publish(data.clone());
@@ -134,7 +134,7 @@ async fn the_same_transfer_works_without_extra_connections() {
 async fn a_reused_dataset_is_not_resent_over_the_channels() {
     let mesh = Mesh::start().await;
     mesh.attach_agent(2).await;
-    let mut controller = mesh.controller(32 * 1024);
+    let controller = mesh.controller(32 * 1024);
 
     let data = dataset(128 * 1024);
     let descriptor = controller.publish(data.clone());

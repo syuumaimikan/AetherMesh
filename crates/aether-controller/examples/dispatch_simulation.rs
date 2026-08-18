@@ -8,7 +8,7 @@ use aether_scheduler::{DataCatalog, LeastLoadedScheduler};
 
 #[tokio::main]
 async fn main() {
-    let mut controller = Controller::new(
+    let controller = Controller::new(
         LeastLoadedScheduler::new(),
         SimulatedMesh::new(),
         DataCatalog::new(),
@@ -17,7 +17,7 @@ async fn main() {
     for (hostname, cpu) in [("desktop", 0.80), ("rpi4", 0.15), ("cloud-vm", 0.45)] {
         let mut info = NodeInfo::new(NodeId::generate(), hostname, "127.0.0.1:7000", 4);
         info.update_metrics(NodeMetrics::new(cpu, 0.5, 4 * 1024 * 1024 * 1024));
-        controller.registry_mut().register(info);
+        controller.register(info);
     }
 
     for size in [16usize, 1024, 65536] {

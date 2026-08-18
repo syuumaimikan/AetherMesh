@@ -4,6 +4,7 @@
 //! the in-process simulation and a real connection.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use aether_core::{
@@ -66,7 +67,7 @@ pub enum DispatchError {
 /// Carries data and tasks to a node and brings results back.
 pub trait TaskTransport {
     fn dispatch(
-        &mut self,
+        &self,
         node_id: NodeId,
         task: &Task,
     ) -> impl Future<Output = Result<TaskResult, DispatchError>> + Send;
@@ -74,7 +75,7 @@ pub trait TaskTransport {
     /// Delivers a small dataset in one piece. Must arrive before any task that
     /// reads it. `bytes` is the wire form produced with `codec`.
     fn send_data(
-        &mut self,
+        &self,
         node_id: NodeId,
         descriptor: DataDescriptor,
         codec: Codec,
@@ -83,7 +84,7 @@ pub trait TaskTransport {
 
     /// Announces a chunked dataset before its chunks are sent.
     fn send_manifest(
-        &mut self,
+        &self,
         node_id: NodeId,
         manifest: &ChunkManifest,
     ) -> impl Future<Output = Result<(), DispatchError>> + Send;
@@ -91,7 +92,7 @@ pub trait TaskTransport {
     /// Delivers one chunk of an announced dataset. Chunks are independent, so
     /// a transport is free to send them concurrently.
     fn send_chunk(
-        &mut self,
+        &self,
         node_id: NodeId,
         data_id: DataId,
         index: u32,
@@ -106,13 +107,13 @@ pub trait TaskTransport {
     /// override this; over a socket that is the difference between one
     /// round trip per chunk and one for the batch.
     fn send_chunks(
-        &mut self,
+        &self,
         node_id: NodeId,
         data_id: DataId,
         chunks: Vec<(u32, Codec, Vec<u8>)>,
     ) -> impl Future<Output = Result<(), DispatchError>> + Send
     where
-        Self: Send,
+        Self: Sync,
     {
         async move {
             for (index, codec, bytes) in chunks {
@@ -151,13 +152,23 @@ fn is_retryable(error: &DispatchError) -> bool {
 
 /// Owns the registry and drives task placement.
 pub struct Controller<S, T> {
-    registry: NodeRegistry,
+    registry: Arc<Mutex<NodeRegistry>>,
     scheduler: S,
     transport: T,
     catalog: DataCatalog,
     store: DataStore,
     /// Chunk layout of every published dataset large enough to be split.
-    manifests: HashMap<DataId, ChunkManifest>,
+    /// Shared so publishing does not need exclusive access to the whole
+    /// controller while tasks are being dispatched.
+    manifests: Arc<Mutex<HashMap<DataId, ChunkManifest>>>,
+    /// Tasks dispatched to each node and not yet finished.
+    ///
+    /// A node reports its load on a heartbeat, so for the seconds between one
+    /// and the next it looks exactly as idle as it did before the work
+    /// arrived. Without this, dispatching sixty-four tasks at once sends all
+    /// sixty-four to whichever node scored best for the first — measured, on a
+    /// four-node mesh.
+    in_flight: Arc<Mutex<HashMap<NodeId, u32>>>,
     chunk_size: usize,
     compression: CompressionPolicy,
     /// When false, inputs are re-sent even if the node already has them.
@@ -174,16 +185,17 @@ pub struct Controller<S, T> {
 
 // `Send` is required because the transport batches chunk sends, and a batched
 // send has to be able to cross an await point in a spawned task.
-impl<S: Scheduler, T: TaskTransport + Send> Controller<S, T> {
+impl<S: Scheduler, T: TaskTransport + Send + Sync> Controller<S, T> {
     /// Builds a controller whose scheduler reads the same catalog it writes.
     pub fn new(scheduler: S, transport: T, catalog: DataCatalog) -> Self {
         Self {
-            registry: NodeRegistry::new(),
+            registry: Arc::new(Mutex::new(NodeRegistry::new())),
             scheduler,
             transport,
             catalog,
             store: DataStore::new(),
-            manifests: HashMap::new(),
+            manifests: Arc::new(Mutex::new(HashMap::new())),
+            in_flight: Arc::new(Mutex::new(HashMap::new())),
             chunk_size: DEFAULT_CHUNK_SIZE,
             compression: CompressionPolicy::default(),
             reuse_data: true,
@@ -257,24 +269,33 @@ impl<S: Scheduler, T: TaskTransport + Send> Controller<S, T> {
         self
     }
 
-    pub fn registry(&self) -> &NodeRegistry {
-        &self.registry
+    /// The controller's view of the mesh, locked for reading.
+    pub fn registry(&self) -> std::sync::MutexGuard<'_, NodeRegistry> {
+        self.registry.lock().expect("registry mutex poisoned")
     }
 
-    pub fn registry_mut(&mut self) -> &mut NodeRegistry {
-        &mut self.registry
+    /// Adds a node to the controller's view.
+    ///
+    /// Shared rather than owned so a dispatch does not need exclusive access
+    /// to the whole controller: with several tasks in flight there is no
+    /// single owner to hand a `&mut` to.
+    pub fn register(&self, info: aether_core::NodeInfo) {
+        self.registry
+            .lock()
+            .expect("registry mutex poisoned")
+            .register(info);
     }
 
     /// Replaces the controller's view of the mesh with `nodes`.
     ///
     /// The live registry belongs to the server; a long-running controller calls
     /// this before scheduling so it never places work on a node that has left.
-    pub fn sync_registry(&mut self, nodes: Vec<aether_core::NodeInfo>) {
+    pub fn sync_registry(&self, nodes: Vec<aether_core::NodeInfo>) {
         let mut registry = NodeRegistry::new();
         for info in nodes {
             registry.register(info);
         }
-        self.registry = registry;
+        *self.registry.lock().expect("registry mutex poisoned") = registry;
     }
 
     pub fn transport(&self) -> &T {
@@ -306,8 +327,12 @@ impl<S: Scheduler, T: TaskTransport + Send> Controller<S, T> {
     }
 
     /// Chunk layout of a published dataset, if it is large enough to be split.
-    pub fn manifest(&self, data_id: DataId) -> Option<&ChunkManifest> {
-        self.manifests.get(&data_id)
+    pub fn manifest(&self, data_id: DataId) -> Option<ChunkManifest> {
+        self.manifests().get(&data_id).cloned()
+    }
+
+    fn manifests(&self) -> std::sync::MutexGuard<'_, HashMap<DataId, ChunkManifest>> {
+        self.manifests.lock().expect("manifest mutex poisoned")
     }
 
     /// Registers data with the controller and returns its content address.
@@ -315,11 +340,11 @@ impl<S: Scheduler, T: TaskTransport + Send> Controller<S, T> {
     ///
     /// Data larger than one chunk is split now, so the layout is computed once
     /// however many nodes it is later sent to.
-    pub fn publish(&mut self, bytes: Vec<u8>) -> DataDescriptor {
+    pub fn publish(&self, bytes: Vec<u8>) -> DataDescriptor {
         let descriptor = self.store.put(bytes);
         if descriptor.size_bytes > self.chunk_size as u64 {
             let bytes = self.store.get(descriptor.id).expect("just stored");
-            self.manifests
+            self.manifests()
                 .entry(descriptor.id)
                 .or_insert_with(|| ChunkManifest::split(&bytes, self.chunk_size));
         }
@@ -331,7 +356,7 @@ impl<S: Scheduler, T: TaskTransport + Send> Controller<S, T> {
     /// A node that cannot take the task is set aside and the task goes to the
     /// next best node, up to [`RetryPolicy::max_attempts`]. A task that *ran*
     /// and failed is returned as-is: rerunning it would just fail again.
-    pub async fn submit(&mut self, task: Task) -> Result<TaskResult, DispatchError> {
+    pub async fn submit(&self, task: Task) -> Result<TaskResult, DispatchError> {
         // Identical work has an identical answer, so the cheapest dispatch is
         // the one that does not happen.
         if let Some(cache) = &self.cache
@@ -345,8 +370,7 @@ impl<S: Scheduler, T: TaskTransport + Send> Controller<S, T> {
 
         for attempt in 1..=self.retry.max_attempts {
             let nodes: Vec<_> = self
-                .registry
-                .nodes()
+                .nodes_with_pending_work()
                 .into_iter()
                 .filter(|node| !unusable.contains(&node.id) && self.transport.is_available(node.id))
                 .collect();
@@ -356,7 +380,11 @@ impl<S: Scheduler, T: TaskTransport + Send> Controller<S, T> {
                 .select_node(&nodes, &task)
                 .ok_or(DispatchError::NoNodeAvailable(task.id))?;
 
-            match self.try_once(node_id, &task).await {
+            self.begin_on(node_id);
+            let attempted = self.try_once(node_id, &task).await;
+            self.finished_on(node_id);
+
+            match attempted {
                 Ok(result) => {
                     self.record_output(&result);
                     if let Some(cache) = &self.cache {
@@ -387,7 +415,7 @@ impl<S: Scheduler, T: TaskTransport + Send> Controller<S, T> {
     /// The controller keeps a copy too — the result came back over the wire
     /// regardless — which is what lets a dependent run somewhere else if the
     /// producing node has since left.
-    fn record_output(&mut self, result: &TaskResult) {
+    fn record_output(&self, result: &TaskResult) {
         let Some(output_id) = result.output_id else {
             return;
         };
@@ -412,17 +440,13 @@ impl<S: Scheduler, T: TaskTransport + Send> Controller<S, T> {
     }
 
     /// One placement attempt: move the missing inputs, then run the task.
-    async fn try_once(
-        &mut self,
-        node_id: NodeId,
-        task: &Task,
-    ) -> Result<TaskResult, DispatchError> {
+    async fn try_once(&self, node_id: NodeId, task: &Task) -> Result<TaskResult, DispatchError> {
         self.ensure_inputs(node_id, task).await?;
         self.transport.dispatch(node_id, task).await
     }
 
     /// Sends the task's inputs that the node does not have yet.
-    async fn ensure_inputs(&mut self, node_id: NodeId, task: &Task) -> Result<(), DispatchError> {
+    async fn ensure_inputs(&self, node_id: NodeId, task: &Task) -> Result<(), DispatchError> {
         for data_id in &task.inputs {
             if self.reuse_data && self.catalog.holds(*data_id, node_id) {
                 self.traffic.record_transfer_skipped();
@@ -437,7 +461,8 @@ impl<S: Scheduler, T: TaskTransport + Send> Controller<S, T> {
             let descriptor = DataDescriptor::new(*data_id, bytes.len() as u64);
 
             let bandwidth = self.bandwidth_to(node_id);
-            match self.manifests.get(data_id).cloned() {
+            let manifest = self.manifests().get(data_id).cloned();
+            match manifest {
                 Some(manifest) => {
                     self.send_chunked(node_id, &manifest, &bytes, bandwidth)
                         .await?
@@ -458,16 +483,62 @@ impl<S: Scheduler, T: TaskTransport + Send> Controller<S, T> {
         Ok(())
     }
 
+    /// The node list as the scheduler should see it: reported load, plus the
+    /// work this controller has already sent and not yet heard back about.
+    ///
+    /// Each outstanding task counts as one core's worth of the node, which is
+    /// crude and is meant to be: the point is that a node holding four tasks
+    /// stops looking as attractive as one holding none, not that the number is
+    /// an accurate prediction of anything.
+    fn nodes_with_pending_work(&self) -> Vec<aether_core::NodeInfo> {
+        let in_flight = self.in_flight.lock().expect("in-flight mutex poisoned");
+        self.registry()
+            .nodes()
+            .into_iter()
+            .map(|mut node| {
+                let pending = in_flight.get(&node.id).copied().unwrap_or(0);
+                if pending > 0 {
+                    let share = pending as f32 / node.cpu_cores.max(1) as f32;
+                    node.metrics = aether_core::NodeMetrics::new(
+                        node.metrics.cpu_usage + share,
+                        node.metrics.memory_usage,
+                        node.metrics.memory_total_bytes,
+                    );
+                }
+                node
+            })
+            .collect()
+    }
+
+    fn begin_on(&self, node_id: NodeId) {
+        *self
+            .in_flight
+            .lock()
+            .expect("in-flight mutex poisoned")
+            .entry(node_id)
+            .or_insert(0) += 1;
+    }
+
+    fn finished_on(&self, node_id: NodeId) {
+        let mut in_flight = self.in_flight.lock().expect("in-flight mutex poisoned");
+        if let Some(pending) = in_flight.get_mut(&node_id) {
+            *pending = pending.saturating_sub(1);
+            if *pending == 0 {
+                in_flight.remove(&node_id);
+            }
+        }
+    }
+
     /// Link speed toward a node, as far as the registry knows.
     fn bandwidth_to(&self, node_id: NodeId) -> Option<u64> {
-        self.registry
+        self.registry()
             .get(node_id)
             .and_then(|entry| entry.info.bandwidth_bytes_per_sec)
     }
 
     /// Sends a manifest followed by the chunks the node is still missing.
     async fn send_chunked(
-        &mut self,
+        &self,
         node_id: NodeId,
         manifest: &ChunkManifest,
         bytes: &[u8],
@@ -531,7 +602,7 @@ mod tests {
 
     #[tokio::test]
     async fn submitting_without_nodes_fails() {
-        let mut controller = controller();
+        let controller = controller();
         let task = Task::new(kind::ECHO, b"hi".to_vec());
         let id = task.id;
 
@@ -543,12 +614,12 @@ mod tests {
 
     #[tokio::test]
     async fn task_lands_on_the_least_loaded_node() {
-        let mut controller = controller();
+        let controller = controller();
         let busy = node("busy", 0.9);
         let idle = node("idle", 0.1);
         let idle_id = idle.id;
-        controller.registry_mut().register(busy);
-        controller.registry_mut().register(idle);
+        controller.register(busy);
+        controller.register(idle);
 
         let result = controller
             .submit(Task::new(kind::ECHO, b"payload".to_vec()))
@@ -562,8 +633,8 @@ mod tests {
 
     #[tokio::test]
     async fn an_unknown_task_kind_comes_back_as_a_failed_result() {
-        let mut controller = controller();
-        controller.registry_mut().register(node("only", 0.2));
+        let controller = controller();
+        controller.register(node("only", 0.2));
 
         let result = controller
             .submit(Task::new("quantum", Vec::new()))
@@ -576,8 +647,8 @@ mod tests {
 
     #[tokio::test]
     async fn dispatching_counts_transferred_bytes() {
-        let mut controller = controller();
-        controller.registry_mut().register(node("only", 0.2));
+        let controller = controller();
+        controller.register(node("only", 0.2));
         assert_eq!(controller.transport().bytes_transferred(), 0);
 
         controller
@@ -591,12 +662,12 @@ mod tests {
     #[tokio::test]
     async fn an_input_is_transferred_once_and_then_reused() {
         let catalog = DataCatalog::new();
-        let mut controller = Controller::new(
+        let controller = Controller::new(
             LocalityScheduler::new(catalog.clone()),
             SimulatedMesh::new(),
             catalog,
         );
-        controller.registry_mut().register(node("only", 0.2));
+        controller.register(node("only", 0.2));
 
         let descriptor = controller.publish(vec![7u8; 4096]);
         for _ in 0..3 {
@@ -612,15 +683,15 @@ mod tests {
     #[tokio::test]
     async fn each_node_receives_the_data_once() {
         let catalog = DataCatalog::new();
-        let mut controller = Controller::new(
+        let controller = Controller::new(
             LeastLoadedScheduler::new(),
             SimulatedMesh::new(),
             catalog.clone(),
         );
         let first = node("a", 0.1);
         let second = node("b", 0.9);
-        controller.registry_mut().register(first.clone());
-        controller.registry_mut().register(second.clone());
+        controller.register(first.clone());
+        controller.register(second.clone());
 
         let descriptor = controller.publish(vec![1u8; 100]);
         let task = Task::new(kind::ECHO, Vec::new()).with_inputs(vec![descriptor.id]);
@@ -635,13 +706,13 @@ mod tests {
     #[tokio::test]
     async fn a_large_input_is_split_into_chunks() {
         let catalog = DataCatalog::new();
-        let mut controller = Controller::new(
+        let controller = Controller::new(
             LeastLoadedScheduler::new(),
             SimulatedMesh::new(),
             catalog.clone(),
         )
         .with_chunk_size(1024);
-        controller.registry_mut().register(node("only", 0.2));
+        controller.register(node("only", 0.2));
 
         let dataset: Vec<u8> = (0..4096).map(|i| (i % 251) as u8).collect();
         let descriptor = controller.publish(dataset.clone());
@@ -668,13 +739,13 @@ mod tests {
     #[tokio::test]
     async fn repeated_chunks_are_sent_only_once() {
         let catalog = DataCatalog::new();
-        let mut controller = Controller::new(
+        let controller = Controller::new(
             LeastLoadedScheduler::new(),
             SimulatedMesh::new(),
             catalog.clone(),
         )
         .with_chunk_size(1024);
-        controller.registry_mut().register(node("only", 0.2));
+        controller.register(node("only", 0.2));
 
         // Four identical chunks: only the first is worth sending.
         let descriptor = controller.publish(vec![5u8; 4096]);
@@ -690,7 +761,7 @@ mod tests {
     #[tokio::test]
     async fn a_compressible_input_goes_over_the_wire_smaller() {
         let catalog = DataCatalog::new();
-        let mut controller = Controller::new(
+        let controller = Controller::new(
             LeastLoadedScheduler::new(),
             SimulatedMesh::new(),
             catalog.clone(),
@@ -698,7 +769,7 @@ mod tests {
         // Slow link: compression is worth the CPU.
         let mut info = node("slow", 0.2);
         info.bandwidth_bytes_per_sec = Some(1024 * 1024);
-        controller.registry_mut().register(info);
+        controller.register(info);
 
         let dataset = vec![0xcd; 256 * 1024];
         let descriptor = controller.publish(dataset.clone());
@@ -723,14 +794,14 @@ mod tests {
     #[tokio::test]
     async fn a_fast_link_skips_compression() {
         let catalog = DataCatalog::new();
-        let mut controller = Controller::new(
+        let controller = Controller::new(
             LeastLoadedScheduler::new(),
             SimulatedMesh::new(),
             catalog.clone(),
         );
         let mut info = node("fast", 0.2);
         info.bandwidth_bytes_per_sec = Some(10 * 1024 * 1024 * 1024);
-        controller.registry_mut().register(info);
+        controller.register(info);
 
         let descriptor = controller.publish(vec![0xcd; 256 * 1024]);
         controller
@@ -744,13 +815,13 @@ mod tests {
     #[tokio::test]
     async fn compression_can_be_turned_off() {
         let catalog = DataCatalog::new();
-        let mut controller = Controller::new(
+        let controller = Controller::new(
             LeastLoadedScheduler::new(),
             SimulatedMesh::new(),
             catalog.clone(),
         )
         .with_compression(aether_core::CompressionPolicy::disabled());
-        controller.registry_mut().register(node("slow", 0.2));
+        controller.register(node("slow", 0.2));
 
         let descriptor = controller.publish(vec![0xcd; 128 * 1024]);
         controller
@@ -764,25 +835,28 @@ mod tests {
     /// A transport where a chosen set of nodes is unreachable.
     struct FlakyMesh {
         broken: HashSet<NodeId>,
-        attempts: Vec<NodeId>,
+        attempts: std::sync::Mutex<Vec<NodeId>>,
     }
 
     impl FlakyMesh {
         fn new(broken: impl IntoIterator<Item = NodeId>) -> Self {
             Self {
                 broken: broken.into_iter().collect(),
-                attempts: Vec::new(),
+                attempts: std::sync::Mutex::new(Vec::new()),
             }
         }
     }
 
     impl TaskTransport for FlakyMesh {
         async fn dispatch(
-            &mut self,
+            &self,
             node_id: NodeId,
             task: &Task,
         ) -> Result<TaskResult, DispatchError> {
-            self.attempts.push(node_id);
+            self.attempts
+                .lock()
+                .expect("attempts mutex poisoned")
+                .push(node_id);
             if self.broken.contains(&node_id) {
                 return Err(DispatchError::Unreachable {
                     node_id,
@@ -798,7 +872,7 @@ mod tests {
         }
 
         async fn send_data(
-            &mut self,
+            &self,
             _node_id: NodeId,
             _descriptor: DataDescriptor,
             _codec: Codec,
@@ -808,7 +882,7 @@ mod tests {
         }
 
         async fn send_manifest(
-            &mut self,
+            &self,
             _node_id: NodeId,
             _manifest: &ChunkManifest,
         ) -> Result<(), DispatchError> {
@@ -816,7 +890,7 @@ mod tests {
         }
 
         async fn send_chunk(
-            &mut self,
+            &self,
             _node_id: NodeId,
             _data_id: DataId,
             _index: u32,
@@ -845,9 +919,9 @@ mod tests {
     async fn a_task_moves_to_another_node_when_one_is_down() {
         let first = node("down", 0.1);
         let second = node("up", 0.5);
-        let mut controller = flaky_controller([first.id]);
-        controller.registry_mut().register(first.clone());
-        controller.registry_mut().register(second.clone());
+        let controller = flaky_controller([first.id]);
+        controller.register(first.clone());
+        controller.register(second.clone());
 
         let result = controller
             .submit(Task::new(kind::ECHO, Vec::new()))
@@ -856,16 +930,23 @@ mod tests {
 
         assert_eq!(result.node_id, second.id);
         assert_eq!(controller.retries(), 1);
-        assert_eq!(controller.transport().attempts, vec![first.id, second.id]);
+        assert_eq!(
+            *controller
+                .transport()
+                .attempts
+                .lock()
+                .expect("attempts mutex poisoned"),
+            vec![first.id, second.id]
+        );
     }
 
     #[tokio::test]
     async fn a_task_fails_once_every_node_has_been_tried() {
         let first = node("down-a", 0.1);
         let second = node("down-b", 0.5);
-        let mut controller = flaky_controller([first.id, second.id]);
-        controller.registry_mut().register(first);
-        controller.registry_mut().register(second);
+        let controller = flaky_controller([first.id, second.id]);
+        controller.register(first);
+        controller.register(second);
 
         let task = Task::new(kind::ECHO, Vec::new());
         let id = task.id;
@@ -880,13 +961,13 @@ mod tests {
     #[tokio::test]
     async fn retrying_can_be_switched_off() {
         let only = node("down", 0.1);
-        let mut controller = Controller::new(
+        let controller = Controller::new(
             LeastLoadedScheduler::new(),
             FlakyMesh::new([only.id]),
             DataCatalog::new(),
         )
         .with_retry(RetryPolicy::none());
-        controller.registry_mut().register(only.clone());
+        controller.register(only.clone());
 
         let error = controller
             .submit(Task::new(kind::ECHO, Vec::new()))
@@ -899,8 +980,8 @@ mod tests {
 
     #[tokio::test]
     async fn repeated_work_is_answered_from_the_cache() {
-        let mut controller = controller().with_result_cache(crate::cache::ResultCache::new(16));
-        controller.registry_mut().register(node("only", 0.2));
+        let controller = controller().with_result_cache(crate::cache::ResultCache::new(16));
+        controller.register(node("only", 0.2));
 
         let first = controller
             .submit(Task::new(kind::ECHO, b"same".to_vec()))
@@ -925,8 +1006,8 @@ mod tests {
 
     #[tokio::test]
     async fn different_work_still_reaches_a_node() {
-        let mut controller = controller().with_result_cache(crate::cache::ResultCache::new(16));
-        controller.registry_mut().register(node("only", 0.2));
+        let controller = controller().with_result_cache(crate::cache::ResultCache::new(16));
+        controller.register(node("only", 0.2));
 
         controller
             .submit(Task::new(kind::ECHO, b"one".to_vec()))
@@ -945,8 +1026,8 @@ mod tests {
 
     #[tokio::test]
     async fn caching_is_off_unless_asked_for() {
-        let mut controller = controller();
-        controller.registry_mut().register(node("only", 0.2));
+        let controller = controller();
+        controller.register(node("only", 0.2));
 
         controller
             .submit(Task::new(kind::ECHO, b"same".to_vec()))
@@ -964,8 +1045,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_task_that_ran_and_failed_is_not_retried() {
-        let mut controller = controller();
-        controller.registry_mut().register(node("only", 0.2));
+        let controller = controller();
+        controller.register(node("only", 0.2));
 
         let result = controller
             .submit(Task::new("quantum", Vec::new()))
@@ -978,8 +1059,8 @@ mod tests {
 
     #[tokio::test]
     async fn an_unpublished_input_is_rejected_before_dispatch() {
-        let mut controller = controller();
-        controller.registry_mut().register(node("only", 0.2));
+        let controller = controller();
+        controller.register(node("only", 0.2));
         let missing = DataId::of(b"never published");
 
         let task = Task::new(kind::ECHO, Vec::new()).with_inputs(vec![missing]);

@@ -73,7 +73,7 @@ impl Mesh {
     }
 
     fn controller(&self) -> Controller<AdvancedScheduler, NetworkTransport> {
-        let mut controller = Controller::new(
+        let controller = Controller::new(
             AdvancedScheduler::new(self.state.catalog.clone()),
             NetworkTransport::new(self.state.connections.clone())
                 .with_timeout(Duration::from_secs(5)),
@@ -85,7 +85,7 @@ impl Mesh {
         });
 
         for info in self.state.registry.lock().unwrap().nodes() {
-            controller.registry_mut().register(info);
+            controller.register(info);
         }
         controller
     }
@@ -96,7 +96,7 @@ async fn three_nodes_register_and_run_tasks() {
     let mesh = Mesh::start(3).await;
     assert_eq!(mesh.state.registry.lock().unwrap().len(), 3);
 
-    let mut controller = mesh.controller();
+    let controller = mesh.controller();
     let dataset = vec![7u8; 512 * 1024];
     let descriptor = controller.publish(dataset.clone());
 
@@ -118,7 +118,7 @@ async fn three_nodes_register_and_run_tasks() {
 #[tokio::test]
 async fn work_continues_after_a_node_disappears() {
     let mesh = Mesh::start(3).await;
-    let mut controller = mesh.controller();
+    let controller = mesh.controller();
 
     // Pin the dataset to whichever node runs first.
     let descriptor = controller.publish(vec![3u8; 64 * 1024]);

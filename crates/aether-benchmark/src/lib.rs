@@ -231,7 +231,7 @@ fn controller_for(
 
 /// Runs the benchmark in one mode.
 pub async fn run(config: &BenchmarkConfig, mode: Mode) -> Result<BenchmarkReport, DispatchError> {
-    let mut controller = controller_for(mode, config);
+    let controller = controller_for(mode, config);
 
     for index in 0..config.nodes {
         let mut info = NodeInfo::new(
@@ -244,7 +244,7 @@ pub async fn run(config: &BenchmarkConfig, mode: Mode) -> Result<BenchmarkReport
         .with_latency_ms(5.0);
         // Spread the load so the scheduler has a reason to prefer one node.
         info.update_metrics(NodeMetrics::new(index as f32 / config.nodes as f32, 0.5, 0));
-        controller.registry_mut().register(info);
+        controller.register(info);
     }
 
     let payload = config.payload();

@@ -98,13 +98,13 @@ impl Harness {
     }
 
     /// Copies the live registry into a controller's own view.
-    fn fill<S, T>(&self, mut controller: Controller<S, T>) -> Controller<S, T>
+    fn fill<S, T>(&self, controller: Controller<S, T>) -> Controller<S, T>
     where
         S: aether_scheduler::Scheduler,
-        T: aether_controller::TaskTransport + Send,
+        T: aether_controller::TaskTransport + Send + Sync,
     {
         for info in self.state.registry.lock().unwrap().nodes() {
-            controller.registry_mut().register(info);
+            controller.register(info);
         }
         controller
     }
@@ -181,7 +181,7 @@ async fn heartbeats_update_the_stored_metrics() {
 async fn a_hash_task_runs_on_the_agent_and_comes_back() {
     let harness = Harness::start().await;
     let node_id = harness.attach_agent("worker").await;
-    let mut controller = harness.controller();
+    let controller = harness.controller();
 
     let payload = b"aethermesh".to_vec();
     let result = controller
@@ -201,7 +201,7 @@ async fn a_hash_task_runs_on_the_agent_and_comes_back() {
 async fn a_cpu_task_returns_a_deterministic_result() {
     let harness = Harness::start().await;
     harness.attach_agent("worker").await;
-    let mut controller = harness.controller();
+    let controller = harness.controller();
 
     let payload = 100_000u64.to_le_bytes().to_vec();
     let first = controller
@@ -221,7 +221,7 @@ async fn a_cpu_task_returns_a_deterministic_result() {
 async fn an_unknown_task_kind_fails_on_the_agent_not_in_transit() {
     let harness = Harness::start().await;
     harness.attach_agent("worker").await;
-    let mut controller = harness.controller();
+    let controller = harness.controller();
 
     let result = controller
         .submit(Task::new("definitely-not-supported", Vec::new()))
@@ -235,7 +235,7 @@ async fn an_unknown_task_kind_fails_on_the_agent_not_in_transit() {
 async fn an_input_is_transferred_once_and_reused_by_later_tasks() {
     let harness = Harness::start().await;
     let node_id = harness.attach_agent("worker").await;
-    let mut controller = harness.locality_controller();
+    let controller = harness.locality_controller();
 
     let dataset = vec![9u8; 32 * 1024];
     let descriptor = controller.publish(dataset.clone());
@@ -313,7 +313,7 @@ async fn a_node_over_its_storage_budget_drops_data_and_says_so() {
         .wait_until(|registry| registry.contains(node_id))
         .await;
 
-    let mut controller = harness.locality_controller();
+    let controller = harness.locality_controller();
     let first = controller.publish(vec![1u8; 32 * 1024]);
     let second = controller.publish(vec![2u8; 32 * 1024]);
 
@@ -336,7 +336,7 @@ async fn a_node_over_its_storage_budget_drops_data_and_says_so() {
 async fn a_large_input_arrives_as_chunks_and_is_reassembled() {
     let harness = Harness::start().await;
     harness.attach_agent("worker").await;
-    let mut controller = harness.chunked_controller(64 * 1024);
+    let controller = harness.chunked_controller(64 * 1024);
 
     let dataset: Vec<u8> = (0..(256 * 1024)).map(|i| (i % 251) as u8).collect();
     let descriptor = controller.publish(dataset.clone());
@@ -358,7 +358,7 @@ async fn a_large_input_arrives_as_chunks_and_is_reassembled() {
 async fn a_repeated_chunk_is_not_sent_again() {
     let harness = Harness::start().await;
     harness.attach_agent("worker").await;
-    let mut controller = harness.chunked_controller(16 * 1024);
+    let controller = harness.chunked_controller(16 * 1024);
 
     // Four identical chunks share one content address.
     let dataset = vec![42u8; 64 * 1024];
@@ -383,7 +383,7 @@ async fn a_disconnecting_node_loses_its_catalog_entries() {
     let harness = Harness::start().await;
     let (node_id, agent) = harness.attach_agent_handle("temporary").await;
 
-    let mut controller = harness.locality_controller();
+    let controller = harness.locality_controller();
     let descriptor = controller.publish(vec![3u8; 64]);
     controller
         .submit(Task::new(kind::HASH, Vec::new()).with_inputs(vec![descriptor.id]))
@@ -404,13 +404,8 @@ async fn a_disconnecting_node_loses_its_catalog_entries() {
 #[tokio::test]
 async fn submitting_without_a_connected_agent_fails() {
     let harness = Harness::start().await;
-    let mut controller = harness.controller();
-    controller.registry_mut().register(NodeInfo::new(
-        NodeId::generate(),
-        "ghost",
-        "127.0.0.1:9",
-        1,
-    ));
+    let controller = harness.controller();
+    controller.register(NodeInfo::new(NodeId::generate(), "ghost", "127.0.0.1:9", 1));
 
     let task = Task::new(kind::ECHO, Vec::new());
     let task_id = task.id;
@@ -431,7 +426,7 @@ async fn a_node_that_dies_mid_dispatch_is_retried_elsewhere() {
     // Registered before the abort, so the controller's own view still lists it
     // as connected — this is the race the retry path exists for, as opposed to
     // the already-closed case above.
-    let mut controller = harness.controller();
+    let controller = harness.controller();
     handle.abort();
     harness
         .wait_until(|_| !harness.state.connections.is_connected(dying))

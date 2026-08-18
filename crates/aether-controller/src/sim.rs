@@ -18,20 +18,23 @@ pub type ExecuteFn = fn(NodeId, &Task, &DataStore) -> TaskResult;
 /// Simulated mesh: encodes the assignment, "runs" it, decodes the reply.
 #[derive(Debug)]
 pub struct SimulatedMesh {
-    bytes_transferred: u64,
+    /// Shared rather than owned: the transport trait no longer hands out
+    /// exclusive access, because a mesh that dispatches one task at a time is
+    /// not a mesh.
+    bytes_transferred: std::sync::Arc<std::sync::atomic::AtomicU64>,
     execute: ExecuteFn,
     /// Stands in for the data every simulated node holds.
     store: DataStore,
-    assembler: ChunkAssembler,
+    assembler: std::sync::Arc<std::sync::Mutex<ChunkAssembler>>,
 }
 
 impl Default for SimulatedMesh {
     fn default() -> Self {
         Self {
-            bytes_transferred: 0,
+            bytes_transferred: std::sync::Arc::default(),
             execute: run,
             store: DataStore::new(),
-            assembler: ChunkAssembler::new(),
+            assembler: std::sync::Arc::new(std::sync::Mutex::new(ChunkAssembler::new())),
         }
     }
 }
@@ -52,6 +55,11 @@ impl SimulatedMesh {
     /// Bytes that would have crossed the network, in both directions.
     pub fn bytes_transferred(&self) -> u64 {
         self.bytes_transferred
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn assembler(&self) -> std::sync::MutexGuard<'_, ChunkAssembler> {
+        self.assembler.lock().expect("assembler mutex poisoned")
     }
 
     /// Data the simulated nodes hold.
@@ -60,24 +68,21 @@ impl SimulatedMesh {
     }
 
     /// Encodes, "sends", and decodes one message, counting the bytes.
-    fn transfer(&mut self, node_id: NodeId, message: &Message) -> Result<Message, DispatchError> {
+    fn transfer(&self, node_id: NodeId, message: &Message) -> Result<Message, DispatchError> {
         let unreachable = |error: aether_protocol::CodecError| DispatchError::Unreachable {
             node_id,
             reason: error.to_string(),
         };
 
         let bytes = encode(message).map_err(unreachable)?;
-        self.bytes_transferred += bytes.len() as u64;
+        self.bytes_transferred
+            .fetch_add(bytes.len() as u64, std::sync::atomic::Ordering::Relaxed);
         decode(&bytes).map_err(unreachable)
     }
 }
 
 impl TaskTransport for SimulatedMesh {
-    async fn dispatch(
-        &mut self,
-        node_id: NodeId,
-        task: &Task,
-    ) -> Result<TaskResult, DispatchError> {
+    async fn dispatch(&self, node_id: NodeId, task: &Task) -> Result<TaskResult, DispatchError> {
         let assignment = Message::TaskAssignment {
             node_id,
             task: task.clone(),
@@ -104,7 +109,7 @@ impl TaskTransport for SimulatedMesh {
     }
 
     async fn send_data(
-        &mut self,
+        &self,
         node_id: NodeId,
         descriptor: DataDescriptor,
         codec: Codec,
@@ -145,7 +150,7 @@ impl TaskTransport for SimulatedMesh {
     }
 
     async fn send_manifest(
-        &mut self,
+        &self,
         node_id: NodeId,
         manifest: &ChunkManifest,
     ) -> Result<(), DispatchError> {
@@ -157,7 +162,7 @@ impl TaskTransport for SimulatedMesh {
         match self.transfer(node_id, &message)? {
             Message::DataManifest { manifest, .. } => {
                 let assembled =
-                    self.assembler
+                    self.assembler()
                         .begin_with(manifest, &self.store)
                         .map_err(|error| DispatchError::Unreachable {
                             node_id,
@@ -176,7 +181,7 @@ impl TaskTransport for SimulatedMesh {
     }
 
     async fn send_chunk(
-        &mut self,
+        &self,
         node_id: NodeId,
         data_id: DataId,
         index: u32,
@@ -211,7 +216,7 @@ impl TaskTransport for SimulatedMesh {
         })?;
 
         match self
-            .assembler
+            .assembler()
             .add_stored(&self.store, data_id, index, bytes)
         {
             Ok(Some(assembled)) => {
@@ -247,7 +252,7 @@ mod tests {
 
     #[tokio::test]
     async fn echo_returns_the_payload_and_counts_both_directions() {
-        let mut mesh = SimulatedMesh::new();
+        let mesh = SimulatedMesh::new();
         let node_id = NodeId::generate();
         let task = Task::new("echo", b"aethermesh".to_vec());
 
@@ -261,7 +266,7 @@ mod tests {
 
     #[tokio::test]
     async fn byte_counter_accumulates_across_dispatches() {
-        let mut mesh = SimulatedMesh::new();
+        let mesh = SimulatedMesh::new();
         let node_id = NodeId::generate();
 
         mesh.dispatch(node_id, &Task::new("echo", vec![1, 2, 3]))
@@ -278,7 +283,7 @@ mod tests {
 
     #[tokio::test]
     async fn transferred_data_lands_in_the_simulated_store() {
-        let mut mesh = SimulatedMesh::new();
+        let mesh = SimulatedMesh::new();
         let node_id = NodeId::generate();
         let descriptor = DataDescriptor::of(b"dataset");
 
@@ -295,7 +300,7 @@ mod tests {
 
     #[tokio::test]
     async fn compressed_data_is_restored_on_arrival() {
-        let mut mesh = SimulatedMesh::new();
+        let mesh = SimulatedMesh::new();
         let node_id = NodeId::generate();
         let dataset = vec![0xcd; 32 * 1024];
         let descriptor = DataDescriptor::of(&dataset);

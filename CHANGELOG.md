@@ -21,6 +21,16 @@ from 0.1.0 onward. Until then, `main` is the release.
   Dispatch was strictly first-come, first-served before this — and, since one
   task is dispatched at a time, a long backlog meant urgent work waited behind
   all of it.
+- **The mesh runs more than one task at a time.** Dispatch needed exclusive
+  access to the controller, so however many nodes were registered, exactly one
+  task was ever in flight. `TaskTransport` now takes `&self` and the
+  controller's mutable state is shared, so dispatches run concurrently up to a
+  bound.
+- **The scheduler counts work it has already sent.** Nodes report load on a
+  heartbeat, so for the seconds between two of them a node that has just been
+  given sixty-four tasks looks exactly as idle as one given none — and got all
+  sixty-four. Measured on four agents: 64/0/0/0 before, 16/16/16/16 after,
+  166 tasks/s to 638.
 - **Placement weights are settable** (`[scheduler_weights]`). The README had
   claimed they were configurable; they were not reachable from the binary.
 - **Workflow results report where each step ran**, how big its output was,

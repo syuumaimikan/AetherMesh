@@ -120,12 +120,12 @@ impl FlowResult {
 /// that do not depend on the failure still run — a diamond with one bad arm
 /// should still tell you about the good one.
 pub async fn run_workflow<S, T>(
-    controller: &mut Controller<S, T>,
+    controller: &Controller<S, T>,
     workflow: &Workflow,
 ) -> Result<FlowResult, FlowError>
 where
     S: Scheduler,
-    T: TaskTransport + Send,
+    T: TaskTransport + Send + Sync,
 {
     let order = workflow.order()?;
     let mut outputs: HashMap<usize, aether_core::DataId> = HashMap::new();
@@ -223,13 +223,13 @@ mod tests {
     /// Nodes that run the agent's real built-in tasks, so `hash` works and a
     /// result carries the `output_id` a workflow depends on.
     fn controller_with(nodes: usize) -> Controller<LeastLoadedScheduler, SimulatedMesh> {
-        let mut controller = Controller::new(
+        let controller = Controller::new(
             LeastLoadedScheduler::new(),
             SimulatedMesh::with_executor(aether_agent::execute),
             DataCatalog::new(),
         );
         for index in 0..nodes {
-            controller.registry_mut().register(NodeInfo::new(
+            controller.register(NodeInfo::new(
                 NodeId::generate(),
                 format!("node-{index}"),
                 "127.0.0.1:1",
@@ -245,7 +245,7 @@ mod tests {
 
     #[tokio::test]
     async fn every_step_of_a_chain_runs_in_order() {
-        let mut controller = controller_with(1);
+        let controller = controller_with(1);
         let workflow = Workflow::chain(vec![
             Task::new(kind::ECHO, b"one".to_vec()),
             Task::new(kind::HASH, Vec::new()),
@@ -253,7 +253,7 @@ mod tests {
         ])
         .unwrap();
 
-        let outcome = run_workflow(&mut controller, &workflow).await.unwrap();
+        let outcome = run_workflow(&controller, &workflow).await.unwrap();
 
         assert!(outcome.is_success(), "{outcome:?}");
         assert_eq!(outcome.results.len(), 3);
@@ -262,14 +262,14 @@ mod tests {
 
     #[tokio::test]
     async fn a_step_reads_what_the_step_before_it_produced() {
-        let mut controller = controller_with(1);
+        let controller = controller_with(1);
         let workflow = Workflow::chain(vec![
             Task::new(kind::ECHO, b"payload".to_vec()),
             Task::new(kind::HASH, Vec::new()),
         ])
         .unwrap();
 
-        let outcome = run_workflow(&mut controller, &workflow).await.unwrap();
+        let outcome = run_workflow(&controller, &workflow).await.unwrap();
         let second = &outcome.results[1];
 
         // The second step hashed nothing but its predecessor's output, so the
@@ -287,13 +287,13 @@ mod tests {
         // Locality scheduling, several nodes: the second step should land on
         // whichever node produced the data rather than pulling it elsewhere.
         let catalog = DataCatalog::new();
-        let mut controller = Controller::new(
+        let controller = Controller::new(
             LocalityScheduler::new(catalog.clone()),
             SimulatedMesh::with_executor(aether_agent::execute),
             catalog,
         );
         for index in 0..3 {
-            controller.registry_mut().register(NodeInfo::new(
+            controller.register(NodeInfo::new(
                 NodeId::generate(),
                 format!("node-{index}"),
                 "127.0.0.1:1",
@@ -308,7 +308,7 @@ mod tests {
         .unwrap();
 
         let before = controller.data_bytes_uncompressed();
-        let outcome = run_workflow(&mut controller, &workflow).await.unwrap();
+        let outcome = run_workflow(&controller, &workflow).await.unwrap();
 
         assert!(outcome.is_success(), "{outcome:?}");
         assert_eq!(
@@ -324,7 +324,7 @@ mod tests {
 
     #[tokio::test]
     async fn both_arms_of_a_diamond_run_before_the_join() {
-        let mut controller = controller_with(2);
+        let controller = controller_with(2);
         let workflow = Workflow::new(vec![
             Step::new(Task::new(kind::ECHO, b"seed".to_vec())),
             Step::after(task(kind::HASH), vec![0]),
@@ -333,7 +333,7 @@ mod tests {
         ])
         .unwrap();
 
-        let outcome = run_workflow(&mut controller, &workflow).await.unwrap();
+        let outcome = run_workflow(&controller, &workflow).await.unwrap();
 
         assert!(outcome.is_success(), "{outcome:?}");
         assert_eq!(outcome.results.len(), 4);
@@ -341,7 +341,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_join_reads_both_arms() {
-        let mut controller = controller_with(1);
+        let controller = controller_with(1);
         let workflow = Workflow::new(vec![
             Step::new(Task::new(kind::ECHO, b"a".to_vec())),
             Step::new(Task::new(kind::ECHO, b"b".to_vec())),
@@ -349,7 +349,7 @@ mod tests {
         ])
         .unwrap();
 
-        let outcome = run_workflow(&mut controller, &workflow).await.unwrap();
+        let outcome = run_workflow(&controller, &workflow).await.unwrap();
 
         // `hash` digests the payload then every input in order, so the join's
         // answer is only reachable if it received both arms.
@@ -364,7 +364,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_failed_step_stops_what_depends_on_it() {
-        let mut controller = controller_with(1);
+        let controller = controller_with(1);
         let workflow = Workflow::chain(vec![
             Task::new("nonsense", Vec::new()),
             Task::new(kind::HASH, Vec::new()),
@@ -372,7 +372,7 @@ mod tests {
         ])
         .unwrap();
 
-        let outcome = run_workflow(&mut controller, &workflow).await.unwrap();
+        let outcome = run_workflow(&controller, &workflow).await.unwrap();
 
         // Running step two on step one's output when step one failed would
         // produce a confident answer computed from nothing.
@@ -384,7 +384,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_failure_in_one_arm_does_not_stop_the_other() {
-        let mut controller = controller_with(1);
+        let controller = controller_with(1);
         let workflow = Workflow::new(vec![
             Step::new(Task::new("nonsense", Vec::new())),
             Step::after(task(kind::HASH), vec![0]),
@@ -392,7 +392,7 @@ mod tests {
         ])
         .unwrap();
 
-        let outcome = run_workflow(&mut controller, &workflow).await.unwrap();
+        let outcome = run_workflow(&controller, &workflow).await.unwrap();
 
         // A diamond with one bad arm should still tell you about the good one.
         assert_eq!(outcome.skipped, [1]);
@@ -403,13 +403,13 @@ mod tests {
     #[tokio::test]
     async fn a_chain_reports_that_nothing_moved() {
         let catalog = DataCatalog::new();
-        let mut controller = Controller::new(
+        let controller = Controller::new(
             LocalityScheduler::new(catalog.clone()),
             SimulatedMesh::with_executor(aether_agent::execute),
             catalog,
         );
         for index in 0..3 {
-            controller.registry_mut().register(NodeInfo::new(
+            controller.register(NodeInfo::new(
                 NodeId::generate(),
                 format!("node-{index}"),
                 "127.0.0.1:1",
@@ -424,7 +424,7 @@ mod tests {
         ])
         .unwrap();
 
-        let outcome = run_workflow(&mut controller, &workflow).await.unwrap();
+        let outcome = run_workflow(&controller, &workflow).await.unwrap();
 
         assert!(outcome.is_success(), "{outcome:?}");
         assert_eq!(outcome.bytes_moved(), 0, "an intermediate result travelled");
@@ -441,7 +441,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_placement_names_the_step_it_describes() {
-        let mut controller = controller_with(1);
+        let controller = controller_with(1);
         // Written out of order, so a placement indexed by position would be
         // wrong and a placement carrying its step number would not.
         let workflow = Workflow::new(vec![
@@ -450,7 +450,7 @@ mod tests {
         ])
         .unwrap();
 
-        let outcome = run_workflow(&mut controller, &workflow).await.unwrap();
+        let outcome = run_workflow(&controller, &workflow).await.unwrap();
 
         assert_eq!(outcome.placements[0].step, 0);
         assert_eq!(outcome.placements[1].step, 1);
@@ -459,14 +459,14 @@ mod tests {
 
     #[tokio::test]
     async fn a_workflow_that_stopped_early_reports_only_what_ran() {
-        let mut controller = controller_with(1);
+        let controller = controller_with(1);
         let workflow = Workflow::chain(vec![
             Task::new("nonsense", Vec::new()),
             Task::new(kind::HASH, Vec::new()),
         ])
         .unwrap();
 
-        let outcome = run_workflow(&mut controller, &workflow).await.unwrap();
+        let outcome = run_workflow(&controller, &workflow).await.unwrap();
 
         assert_eq!(outcome.placements.len(), 1);
         assert_eq!(outcome.bytes_moved(), 0);
@@ -474,10 +474,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_workflow_with_nowhere_to_run_reports_which_step() {
-        let mut controller = controller_with(0);
+        let controller = controller_with(0);
         let workflow = Workflow::parallel(vec![task(kind::ECHO)]).unwrap();
 
-        match run_workflow(&mut controller, &workflow).await {
+        match run_workflow(&controller, &workflow).await {
             Err(FlowError::Dispatch { step, .. }) => assert_eq!(step, 0),
             other => panic!("expected a dispatch failure, got {other:?}"),
         }
@@ -485,7 +485,7 @@ mod tests {
 
     #[tokio::test]
     async fn results_come_back_in_the_order_the_steps_were_written() {
-        let mut controller = controller_with(1);
+        let controller = controller_with(1);
         // Written so that the run order is not the written order.
         let workflow = Workflow::new(vec![
             Step::after(Task::new(kind::ECHO, b"last".to_vec()), vec![1]),
@@ -493,7 +493,7 @@ mod tests {
         ])
         .unwrap();
 
-        let outcome = run_workflow(&mut controller, &workflow).await.unwrap();
+        let outcome = run_workflow(&controller, &workflow).await.unwrap();
 
         assert_eq!(outcome.results[0].output(), Some(&b"last"[..]));
         assert_eq!(outcome.results[1].output(), Some(&b"first"[..]));

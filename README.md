@@ -159,6 +159,21 @@ A mesh spends most of its life with nothing to do, and a fixed heartbeat makes t
 
 The ceiling is the controller's, not the agent's: it declares its eviction window at registration, and the agent stretches to at most half of it, so a single lost heartbeat still cannot evict a healthy node. Raise `heartbeat_timeout_secs` and idle nodes get quieter on their own.
 
+### Work actually runs at the same time
+
+Until recently it did not. Dispatch needed exclusive access to the controller, so a mesh of any size ran **one task at a time**, and the scheduler scored nodes on load they had reported on their last heartbeat — so it never saw the work it had just sent, and put everything on whichever node scored best for the first task.
+
+Both are fixed, and both were needed. On four agents, 64 CPU-bound tasks:
+
+| | tasks per node | wall | throughput |
+|---|---|---:|---:|
+| before | 64 / 0 / 0 / 0 | 385 ms | 166 tasks/s |
+| after | 16 / 16 / 16 / 16 | 100 ms | **638 tasks/s** |
+
+3.8× of a theoretical 4.0×. Fixing only the dispatch gave 1.0× — the placement was still sending everything to one machine.
+
+The number in flight is bounded rather than unlimited: every task out holds a reply channel and whatever its inputs cost to send, so a client submitting ten thousand at once queues instead of exhausting the controller.
+
 ### Failures are ordinary
 
 Heartbeats stop → the node is evicted and its data locations are forgotten. A node refuses a task → the task is re-dispatched to the next best node, data and all. A task that *ran* and failed is returned as a result, not retried forever.

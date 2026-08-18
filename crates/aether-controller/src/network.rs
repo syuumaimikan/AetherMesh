@@ -48,11 +48,7 @@ impl TaskTransport for NetworkTransport {
         self.connections.is_connected(node_id)
     }
 
-    async fn dispatch(
-        &mut self,
-        node_id: NodeId,
-        task: &Task,
-    ) -> Result<TaskResult, DispatchError> {
+    async fn dispatch(&self, node_id: NodeId, task: &Task) -> Result<TaskResult, DispatchError> {
         let task_id = task.id;
         let receiver = self.connections.expect_result(task_id);
 
@@ -83,7 +79,7 @@ impl TaskTransport for NetworkTransport {
     /// Queues the data on the same connection the task will travel on, so it is
     /// always processed by the agent before the task that reads it.
     async fn send_data(
-        &mut self,
+        &self,
         node_id: NodeId,
         descriptor: DataDescriptor,
         codec: Codec,
@@ -102,7 +98,7 @@ impl TaskTransport for NetworkTransport {
     }
 
     async fn send_manifest(
-        &mut self,
+        &self,
         node_id: NodeId,
         manifest: &ChunkManifest,
     ) -> Result<(), DispatchError> {
@@ -117,7 +113,7 @@ impl TaskTransport for NetworkTransport {
     }
 
     async fn send_chunk(
-        &mut self,
+        &self,
         node_id: NodeId,
         data_id: DataId,
         index: u32,
@@ -143,7 +139,7 @@ impl TaskTransport for NetworkTransport {
     /// several connections there is no ordering between them and the task that
     /// reads the data, so the agent confirms assembly explicitly.
     async fn send_chunks(
-        &mut self,
+        &self,
         node_id: NodeId,
         data_id: DataId,
         chunks: Vec<(u32, Codec, Vec<u8>)>,
@@ -190,7 +186,7 @@ mod tests {
 
     #[tokio::test]
     async fn dispatching_to_an_unconnected_node_fails_fast() {
-        let mut transport = NetworkTransport::new(Connections::new());
+        let transport = NetworkTransport::new(Connections::new());
         let task = Task::new("echo", Vec::new());
 
         let error = transport
@@ -207,8 +203,7 @@ mod tests {
         let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
         connections.attach(node_id, sender);
 
-        let mut transport =
-            NetworkTransport::new(connections).with_timeout(Duration::from_millis(50));
+        let transport = NetworkTransport::new(connections).with_timeout(Duration::from_millis(50));
         let task = Task::new("echo", Vec::new());
         let task_id = task.id;
 
@@ -236,7 +231,7 @@ mod tests {
             ));
         });
 
-        let mut transport = NetworkTransport::new(connections);
+        let transport = NetworkTransport::new(connections);
         let result = transport
             .dispatch(node_id, &Task::new("echo", Vec::new()))
             .await

@@ -1,11 +1,11 @@
-phase=advanced-A9
+phase=concurrent-dispatch
 status=complete
-next=A4-quic (or concurrent workflow dispatch, see below)
+next=A4-quic (or concurrent workflow steps: flow.rs still awaits each step)
 
 # Working notes for whoever picks this up next. Not documentation — the READMEs
 # and docs/ are. This is the stuff that would otherwise have to be rediscovered.
 
-test counts: 422 default / 475 with tls + cloud-http
+test counts: 425 default / 478 with tls + cloud-http
 
 ## Advanced phases
 
@@ -70,9 +70,21 @@ completed:
   lag a heartbeat so a node just given work does not look busier. Documented as
   limitations rather than tuned around.
 
-next: concurrent workflow dispatch is the real unlock, and it is blocked on
-Controller::submit taking &mut self. That is a structural change, not a tweak.
-Or A4 QUIC. Still nobody has run this on real hardware; that is now a nodes.toml and three machines away rather than a
+- concurrent dispatch: TaskTransport takes &self; Controller's registry,
+  manifests and a new in_flight map are shared; run_dispatcher spawns up to
+  DEFAULT_IN_FLIGHT dispatches. registry_mut() is gone, replaced by
+  register(&self, info).
+
+  TWO bugs, and fixing one alone did nothing. (1) dispatch was serial. (2) the
+  scheduler scored on heartbeat-reported load, so it could not see work it had
+  just sent. With only (1) fixed: 64 tasks, all on one node of four, 1.0x
+  parallelism. With both: 16/16/16/16, 3.8x, 166 -> 638 tasks/s.
+
+  Verified the regression gate and examples/11-workflow both still hold: the
+  traffic reduction is unchanged and a workflow still moves 0 bytes.
+
+next: flow.rs still awaits each step, so a workflow's wall clock is still the
+sum of its steps even though the plumbing now allows otherwise. Or A4 QUIC. Still nobody has run this on real hardware; that is now a nodes.toml and three machines away rather than a
 harness away, which is as far as it can be closed from here.
 
 not started: A1 real-network bench, A2/A3 priority queue (no queue exists at
