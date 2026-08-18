@@ -1,11 +1,11 @@
-phase=advanced-A2
+phase=advanced-A3
 status=complete
-next=A3-queue-policies
+next=A4-quic-transport
 
 # Working notes for whoever picks this up next. Not documentation — the READMEs
 # and docs/ are. This is the stuff that would otherwise have to be rediscovered.
 
-test counts: 334 default / 387 with tls + cloud-http
+test counts: 351 default / 404 with tls + cloud-http
 
 ## Advanced phases
 
@@ -24,8 +24,14 @@ completed:
   form field + queue panel. Live: 400 background tasks queued 381 deep, a
   critical submitted 250 ms in finished 57th of 401.
 
-next: A3 queue policies — timeout, max size, rejection policy (Reject /
-DropOldest / DropLowestPriority). The queue is currently unbounded.
+- A3 queue policies: max_size + Rejection (Reject / DropOldest /
+  DropLowestPriority), queue-level and per-task deadlines, refused/expired
+  counters. All off by default. Live: 300 tasks at 32 deep -> 42 ran, 258
+  refused; unbounded with timeout_ms=200 -> 45 ran, 255 expired. Controller
+  counters matched both exactly.
+
+next: A4 QUIC transport, or A24-A26 benchmark work. A1 (real-network
+benchmark) is still the weakest claim in the repository.
 
 not started: A1 real-network bench, A2/A3 priority queue (no queue exists at
 all — submit dispatches immediately), A4 QUIC, A6 cost, A7 spot, A8/A9 DAG,
@@ -70,8 +76,6 @@ A10/A11 autoscale, A12/A13 checkpoint, A14 OTel, A17-A23, A24-A26 bench
 
 ## Follow-ups deferred on purpose
 
-- the queue is unbounded and nothing times out in it. That is A3, not an
-  oversight — but do not ship without it.
 - `run_dispatcher` still dispatches one task at a time. The queue makes that
   survivable rather than fixing it; concurrent dispatch needs Controller to
   stop being &mut-per-task.

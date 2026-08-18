@@ -57,6 +57,10 @@ pub enum DispatchError {
     Timeout { node_id: NodeId, task_id: TaskId },
     #[error("task input {0} was never published to the controller")]
     UnknownInput(DataId),
+    #[error("the queue is full; task {task_id} was not accepted")]
+    QueueFull { task_id: TaskId },
+    #[error("task {task_id} waited {waited_ms} ms for a node and gave up")]
+    QueueTimeout { task_id: TaskId, waited_ms: u64 },
 }
 
 /// Carries data and tasks to a node and brings results back.
@@ -136,7 +140,8 @@ pub trait TaskTransport {
 
 /// Whether another node is worth trying.
 ///
-/// A missing input is the submitter's mistake and no node can fix it.
+/// A missing input is the submitter's mistake and no node can fix it, and a
+/// task that never got out of the queue never reached a node to begin with.
 fn is_retryable(error: &DispatchError) -> bool {
     matches!(
         error,

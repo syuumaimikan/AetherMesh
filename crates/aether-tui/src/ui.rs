@@ -515,6 +515,8 @@ mod tests {
                 queue: aether_controller::observability::QueueSnapshot {
                     depth: 4,
                     dequeued: 12,
+                    refused: 0,
+                    expired: 0,
                     mean_wait_ms: 180.0,
                     longest_wait_ms: 2_400,
                 },

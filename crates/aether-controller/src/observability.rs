@@ -201,6 +201,8 @@ pub struct QueueStats {
 struct QueueCounters {
     depth: AtomicU64,
     dequeued: AtomicU64,
+    refused: AtomicU64,
+    expired: AtomicU64,
     /// Summed wait, in milliseconds, so a mean can be derived without keeping
     /// every sample.
     waited_ms: AtomicU64,
@@ -214,6 +216,10 @@ pub struct QueueSnapshot {
     pub depth: u64,
     /// Tasks that have left the queue and been dispatched.
     pub dequeued: u64,
+    /// Tasks turned away because the queue was full, or dropped to make room.
+    pub refused: u64,
+    /// Tasks that gave up waiting.
+    pub expired: u64,
     /// Mean time a dispatched task spent waiting, in milliseconds.
     pub mean_wait_ms: f64,
     /// The longest any task has waited.
@@ -240,12 +246,24 @@ impl QueueStats {
             .fetch_max(waited_ms, Ordering::Relaxed);
     }
 
+    /// Records a task the queue would not take, or dropped to make room.
+    pub fn record_refused(&self) {
+        self.inner.refused.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Records a task that waited past its deadline.
+    pub fn record_expired(&self) {
+        self.inner.expired.fetch_add(1, Ordering::Relaxed);
+    }
+
     pub fn snapshot(&self) -> QueueSnapshot {
         let load = |counter: &AtomicU64| counter.load(Ordering::Relaxed);
         let dequeued = load(&self.inner.dequeued);
         QueueSnapshot {
             depth: load(&self.inner.depth),
             dequeued,
+            refused: load(&self.inner.refused),
+            expired: load(&self.inner.expired),
             mean_wait_ms: match dequeued {
                 0 => 0.0,
                 count => load(&self.inner.waited_ms) as f64 / count as f64,
@@ -393,6 +411,20 @@ mod tests {
         assert_eq!(snapshot.dequeued, 2);
         assert_eq!(snapshot.mean_wait_ms, 200.0);
         assert_eq!(snapshot.longest_wait_ms, 300);
+    }
+
+    #[test]
+    fn refusals_and_expiries_are_counted_separately() {
+        let queue = QueueStats::new();
+        queue.record_refused();
+        queue.record_refused();
+        queue.record_expired();
+
+        // "The mesh would not take it" and "it waited too long" are different
+        // failures with different fixes, so they are different numbers.
+        let snapshot = queue.snapshot();
+        assert_eq!(snapshot.refused, 2);
+        assert_eq!(snapshot.expired, 1);
     }
 
     #[test]

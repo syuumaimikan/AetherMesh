@@ -39,6 +39,15 @@ pub struct ControllerConfig {
     /// Zero turns promotion off, which makes a low priority a genuine risk of
     /// never running at all. Set it only if you mean that.
     pub queue_aging_secs: u64,
+    /// Most tasks allowed to wait at once. Zero means no cap, which is the
+    /// default: a mesh that silently starts refusing work is worse than one
+    /// that visibly falls behind, so this is an operator's decision.
+    pub max_queue_size: usize,
+    /// Seconds a task waits for a node before giving up. Zero means never.
+    pub queue_timeout_secs: u64,
+    /// What gives way when the queue is full: `reject`, `drop_oldest`, or
+    /// `drop_lowest_priority`.
+    pub queue_rejection: crate::queue::Rejection,
     /// Seconds between metrics log lines. Zero turns them off.
     pub metrics_interval_secs: u64,
     /// Address to serve `/metrics` and `/healthz` on. Omit to serve neither.
@@ -76,6 +85,9 @@ impl Default for ControllerConfig {
             tls_key_path: None,
             tls_client_ca_path: None,
             queue_aging_secs: crate::queue::DEFAULT_AGING.as_secs(),
+            max_queue_size: 0,
+            queue_timeout_secs: 0,
+            queue_rejection: crate::queue::Rejection::default(),
             metrics_interval_secs: 60,
             metrics_listen: None,
             probe_interval_secs: 60,
@@ -151,6 +163,15 @@ impl ControllerConfig {
 
     pub fn heartbeat_timeout(&self) -> Duration {
         Duration::from_secs(self.heartbeat_timeout_secs)
+    }
+
+    /// The task queue this configuration asks for.
+    pub fn task_queue<T>(&self) -> crate::queue::Queue<T> {
+        crate::queue::Queue::new()
+            .with_aging(Duration::from_secs(self.queue_aging_secs))
+            .with_max_size(self.max_queue_size)
+            .with_timeout(Duration::from_secs(self.queue_timeout_secs))
+            .with_rejection(self.queue_rejection)
     }
 
     /// Certificate and key, when both are configured.

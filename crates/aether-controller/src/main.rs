@@ -220,10 +220,12 @@ async fn main() -> anyhow::Result<()> {
             controller = controller.with_result_cache(cache);
         }
         let (gateway, commands) = ClientGateway::new(64);
-        let queue = aether_controller::Queue::new()
-            .with_aging(Duration::from_secs(config.queue_aging_secs));
+        let queue = config.task_queue();
         info!(
             aging_secs = config.queue_aging_secs,
+            max_size = config.max_queue_size,
+            timeout_secs = config.queue_timeout_secs,
+            rejection = ?config.queue_rejection,
             "task queue ready (higher priority first, FIFO within a level)"
         );
         tokio::spawn(aether_controller::run_dispatcher_with(

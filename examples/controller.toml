@@ -42,3 +42,18 @@ result_cache_ttl_secs = 300
 # 0 turns promotion off, which makes a low priority a genuine risk of never
 # running at all. Set it only if you mean that.
 queue_aging_secs = 30
+
+# Most tasks allowed to wait at once. 0 means no cap, which is the default:
+# a mesh that silently starts refusing work is worse than one that visibly
+# falls behind, so this is your decision rather than ours.
+max_queue_size = 0
+
+# What gives way when the queue is full.
+#   reject               - turn the newest away; the caller can retry or shed
+#   drop_oldest          - newest wins; for a live feed where stale is worthless
+#   drop_lowest_priority - keep the queue full of work that matters
+queue_rejection = "reject"
+
+# Seconds a task waits for a node before giving up. 0 means never. A caller
+# can override this per submission with `timeout_ms`.
+queue_timeout_secs = 0

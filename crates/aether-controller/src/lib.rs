@@ -32,7 +32,7 @@ pub use health::{DEFAULT_CHECK_INTERVAL, DEFAULT_HEARTBEAT_TIMEOUT, evict_stale_
 pub use network::{DEFAULT_TASK_TIMEOUT, NetworkTransport};
 pub use observability::{MeshMetrics, MetricsSnapshot};
 pub use probe::{DEFAULT_PROBE_BYTES, DEFAULT_PROBE_INTERVAL, LinkMeasurement};
-pub use queue::{DEFAULT_AGING, Queue, Queued};
+pub use queue::{Admitted, DEFAULT_AGING, Queue, Queued, Rejection};
 pub use registry::{NodeEntry, NodeRegistry, RegistryError};
 pub use security::{AuthError, SecurityConfig};
 pub use server::{bind, serve};

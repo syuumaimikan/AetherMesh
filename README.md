@@ -94,6 +94,29 @@ Higher priority first. Within one priority, the order they arrived. **And waitin
 
 Measured on one node with 400 background tasks arriving at once: the queue reached a depth of 381, and a critical task submitted 250 ms into the flood finished at position 57 — ahead of every one of the ~340 still waiting, behind only the ~56 that had already run.
 
+### A queue that fills up is a decision, not an accident
+
+Off by default, because a mesh that silently starts refusing work is worse than one that visibly falls behind. When you do want a limit, you choose what gives way:
+
+```toml
+max_queue_size = 32
+queue_rejection = "reject"        # or drop_oldest, or drop_lowest_priority
+queue_timeout_secs = 30
+```
+
+`reject` turns the newest away — a submission that comes back is one you can retry or shed. `drop_oldest` is for a live feed, where stale work is worthless whatever it was labelled. `drop_lowest_priority` keeps a full queue full of the work that matters, and refuses anything that is itself the least urgent.
+
+A caller can also set its own deadline: `timeout_ms` on a submission says how long that work is worth waiting for, without changing anything for anyone else.
+
+Whatever happens, the caller is told. Measured on one node, 300 tasks at once:
+
+| | accepted and run | refused | timed out |
+|---|---|---|---|
+| `max_queue_size = 32` | 42 | **258** | 0 |
+| unbounded, `timeout_ms = 200` | 45 | 0 | **255** |
+
+Not one submission was left holding a reply channel that never resolves. That is the part worth having.
+
 ### An idle node costs almost nothing to keep
 
 A mesh spends most of its life with nothing to do, and a fixed heartbeat makes that the expensive state: every few seconds, on every machine, a core wakes up to say nothing has changed. So the interval is not fixed. A node running work — or one whose load has visibly moved, even from something the mesh did not start — reports at the configured rate. A node where nothing is happening doubles its gap each time.

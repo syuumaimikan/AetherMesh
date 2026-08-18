@@ -22,7 +22,7 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, info, warn};
 
 use crate::dispatch::{Controller, DispatchError, TaskTransport};
-use crate::queue::Queue;
+use crate::queue::{Admitted, Queue};
 use crate::security::SecurityConfig;
 use crate::state::MeshState;
 
@@ -55,6 +55,10 @@ pub enum ClientRequest {
         /// `"high"`, `"normal"`, `"low"`, `"background"`. Omitted is normal.
         #[serde(default)]
         priority: Option<String>,
+        /// How long this is willing to wait for a node, in milliseconds.
+        /// Omitted uses the controller's default.
+        #[serde(default)]
+        timeout_ms: Option<u64>,
         #[serde(default)]
         module: Option<String>,
     },
@@ -227,6 +231,9 @@ pub enum ClientCommand {
     },
     Submit {
         task: Task,
+        /// How long this task is willing to wait for a node. `None` uses the
+        /// queue's default, which is usually "as long as it takes".
+        timeout: Option<std::time::Duration>,
         reply: oneshot::Sender<Result<TaskResult, DispatchError>>,
     },
     Nodes {
@@ -308,7 +315,21 @@ pub async fn run_dispatcher_with<S, T>(
             closed = true;
         }
 
-        let Some(entry) = queue.pop(Instant::now()) else {
+        // Give up on anything past its deadline before choosing what to run:
+        // a caller should hear at roughly the moment the promise broke, not
+        // whenever the queue happens to reach them.
+        let now = Instant::now();
+        for entry in queue.expire(now) {
+            let waited_ms = entry.waited(now).as_millis() as u64;
+            let _ = entry.payload.send(Err(DispatchError::QueueTimeout {
+                task_id: entry.task.id,
+                waited_ms,
+            }));
+            state.queue.record_expired();
+        }
+        state.queue.set_depth(queue.len());
+
+        let Some(entry) = queue.pop(now) else {
             // Everything admitted was a read, and the client hung up.
             if closed {
                 return;
@@ -335,8 +356,29 @@ fn admit<S, T>(
     T: TaskTransport + Send,
 {
     match command {
-        ClientCommand::Submit { task, reply } => {
-            queue.push(task, reply, Instant::now());
+        ClientCommand::Submit {
+            task,
+            timeout,
+            reply,
+        } => {
+            let task_id = task.id;
+            match queue.push_with_timeout(task, reply, Instant::now(), timeout) {
+                Admitted::Queued => {}
+                // Refused and displaced are the same news to whoever is
+                // waiting: this is not going to run, and here is why, now,
+                // rather than a channel that never resolves.
+                Admitted::Refused(_, reply) => {
+                    let _ = reply.send(Err(DispatchError::QueueFull { task_id }));
+                    state.queue.record_refused();
+                }
+                Admitted::Displaced(entry) => {
+                    let dropped = entry.task.id;
+                    let _ = entry
+                        .payload
+                        .send(Err(DispatchError::QueueFull { task_id: dropped }));
+                    state.queue.record_refused();
+                }
+            }
             state.queue.set_depth(queue.len());
         }
         ClientCommand::Publish { bytes, reply } => {
@@ -435,25 +477,7 @@ async fn serve_request(request: &ClientRequest, gateway: &ClientGateway) -> Clie
     let outcome = match request {
         ClientRequest::Hello { .. } => unreachable!("handled by the caller"),
         ClientRequest::Publish { data } => publish(data, gateway).await,
-        ClientRequest::Submit {
-            kind,
-            payload,
-            inputs,
-            constraints,
-            priority,
-            module,
-        } => {
-            submit(
-                kind,
-                payload,
-                inputs,
-                constraints,
-                priority.as_deref(),
-                module.as_deref(),
-                gateway,
-            )
-            .await
-        }
+        request @ ClientRequest::Submit { .. } => submit(request, gateway).await,
         ClientRequest::Nodes => nodes(gateway).await,
         ClientRequest::Stats => stats_of(gateway).await,
     };
@@ -478,14 +502,22 @@ async fn publish(data: &str, gateway: &ClientGateway) -> Result<ClientResponse, 
 }
 
 async fn submit(
-    kind: &str,
-    payload: &str,
-    inputs: &[String],
-    constraints: &[String],
-    priority: Option<&str>,
-    module: Option<&str>,
+    request: &ClientRequest,
     gateway: &ClientGateway,
 ) -> Result<ClientResponse, String> {
+    let ClientRequest::Submit {
+        kind,
+        payload,
+        inputs,
+        constraints,
+        priority,
+        timeout_ms,
+        module,
+    } = request
+    else {
+        unreachable!("only a submission reaches here");
+    };
+
     let payload = decode(payload)?;
     let inputs = inputs
         .iter()
@@ -498,11 +530,12 @@ async fn submit(
         .map_err(|error| error.to_string())?;
 
     let priority: Priority = priority
+        .as_deref()
         .unwrap_or_default()
         .parse()
         .map_err(|error: aether_core::PriorityParseError| error.to_string())?;
 
-    let task = match module {
+    let task = match module.as_deref() {
         Some(module) => Task::wasm(parse_data_id(module)?, payload).with_inputs(inputs),
         None => Task::new(kind, payload).with_inputs(inputs),
     }
@@ -510,7 +543,13 @@ async fn submit(
     .with_priority(priority);
 
     let (reply, answer) = oneshot::channel();
-    gateway.send(ClientCommand::Submit { task, reply }).await?;
+    gateway
+        .send(ClientCommand::Submit {
+            task,
+            timeout: timeout_ms.map(std::time::Duration::from_millis),
+            reply,
+        })
+        .await?;
     let result = answer
         .await
         .map_err(|_| "submission was dropped".to_string())?;
@@ -632,6 +671,7 @@ pub async fn bind_clients(addr: SocketAddr) -> std::io::Result<(TcpListener, Soc
 
 #[cfg(test)]
 mod tests {
+    use crate::queue::Rejection;
     use aether_core::task::kind;
     use aether_scheduler::{DataCatalog, LeastLoadedScheduler};
 
@@ -690,6 +730,7 @@ mod tests {
                 inputs: Vec::new(),
                 constraints: Vec::new(),
                 priority: None,
+                timeout_ms: None,
                 module: None,
             },
             &gateway,
@@ -718,6 +759,7 @@ mod tests {
                 inputs: Vec::new(),
                 constraints: Vec::new(),
                 priority: None,
+                timeout_ms: None,
                 module: None,
             },
             &gateway,
@@ -739,6 +781,7 @@ mod tests {
                 inputs: Vec::new(),
                 constraints: vec!["gpu=true".to_string()],
                 priority: None,
+                timeout_ms: None,
                 module: None,
             },
             &gateway,
@@ -760,6 +803,7 @@ mod tests {
                 inputs: Vec::new(),
                 constraints: vec!["=nonsense".to_string()],
                 priority: None,
+                timeout_ms: None,
                 module: None,
             },
             &gateway,
@@ -850,7 +894,11 @@ mod tests {
         for task in tasks {
             let (reply, answer) = oneshot::channel();
             commands_tx
-                .send(ClientCommand::Submit { task, reply })
+                .send(ClientCommand::Submit {
+                    task,
+                    timeout: None,
+                    reply,
+                })
                 .await
                 .expect("buffered");
             replies.push(answer);
@@ -896,6 +944,123 @@ mod tests {
         );
     }
 
+    /// Runs a dispatcher over `queue` and returns what each submission got.
+    ///
+    /// Every task is buffered before the dispatcher starts, so the queue sees
+    /// them all at once and the outcome is a decision rather than a race.
+    async fn outcomes(
+        queue: Queue<oneshot::Sender<Result<TaskResult, DispatchError>>>,
+        tasks: Vec<Task>,
+    ) -> Vec<Result<TaskResult, DispatchError>> {
+        let state = MeshState::new();
+        register(&state, "worker");
+        let controller = Controller::new(
+            LeastLoadedScheduler::new(),
+            SimulatedMesh::new(),
+            DataCatalog::new(),
+        );
+
+        let (commands_tx, commands_rx) = mpsc::channel(64);
+        let mut replies = Vec::new();
+        for task in tasks {
+            let (reply, answer) = oneshot::channel();
+            commands_tx
+                .send(ClientCommand::Submit {
+                    task,
+                    timeout: None,
+                    reply,
+                })
+                .await
+                .expect("buffered");
+            replies.push(answer);
+        }
+        drop(commands_tx);
+
+        run_dispatcher_with(controller, state, commands_rx, queue).await;
+        let mut results = Vec::new();
+        for answer in replies {
+            results.push(answer.await.expect("a reply"));
+        }
+        results
+    }
+
+    #[tokio::test]
+    async fn a_full_queue_tells_the_caller_instead_of_leaving_them_waiting() {
+        let tasks = (0..5)
+            .map(|index| Task::new(format!("task-{index}"), Vec::new()))
+            .collect();
+        let results = outcomes(Queue::new().with_max_size(2), tasks).await;
+
+        let refused = results
+            .iter()
+            .filter(|result| matches!(result, Err(DispatchError::QueueFull { .. })))
+            .count();
+
+        // Three of the five could not be taken, and all three found out. A
+        // reply channel that never resolves is the worst way to say no.
+        assert_eq!(refused, 3, "{results:?}");
+        assert_eq!(results.len(), 5);
+    }
+
+    #[tokio::test]
+    async fn dropping_the_lowest_priority_tells_the_task_that_was_dropped() {
+        let tasks = vec![
+            Task::new("background", Vec::new()).with_priority(Priority::Background),
+            Task::new("critical", Vec::new()).with_priority(Priority::Critical),
+        ];
+        let results = outcomes(
+            Queue::new()
+                .with_max_size(1)
+                .with_rejection(Rejection::DropLowestPriority),
+            tasks,
+        )
+        .await;
+
+        // The background task was accepted and then displaced; its caller is
+        // owed an answer just as much as one that was refused at the door.
+        assert!(
+            matches!(results[0], Err(DispatchError::QueueFull { .. })),
+            "{results:?}"
+        );
+        assert!(results[1].is_ok(), "{results:?}");
+    }
+
+    #[tokio::test]
+    async fn a_task_that_waits_past_its_deadline_gives_up() {
+        let state = MeshState::new();
+        // No node registered, so nothing can ever be dispatched.
+        let controller = Controller::new(
+            LeastLoadedScheduler::new(),
+            SimulatedMesh::new(),
+            DataCatalog::new(),
+        );
+
+        let (commands_tx, commands_rx) = mpsc::channel(8);
+        let (reply, answer) = oneshot::channel();
+        commands_tx
+            .send(ClientCommand::Submit {
+                task: Task::new(kind::ECHO, Vec::new()),
+                timeout: Some(std::time::Duration::from_millis(50)),
+                reply,
+            })
+            .await
+            .expect("buffered");
+        drop(commands_tx);
+
+        tokio::spawn(run_dispatcher_with(
+            controller,
+            state,
+            commands_rx,
+            Queue::new(),
+        ));
+
+        // Without a node the first pop fails with NoNodeAvailable, so this
+        // pins the deadline rather than the dispatch: whichever comes first,
+        // the caller is told something.
+        let outcome = answer.await.expect("a reply");
+        assert!(outcome.is_err(), "{outcome:?}");
+    }
+
     #[tokio::test]
     async fn a_priority_the_controller_does_not_know_is_refused() {
         let (gateway, state) = gateway();
@@ -908,6 +1073,7 @@ mod tests {
                 inputs: Vec::new(),
                 constraints: Vec::new(),
                 priority: Some("urgent".to_string()),
+                timeout_ms: None,
                 module: None,
             },
             &gateway,
@@ -934,6 +1100,7 @@ mod tests {
                 inputs: Vec::new(),
                 constraints: Vec::new(),
                 priority: None,
+                timeout_ms: None,
                 module: None,
             },
             &gateway,
@@ -980,6 +1147,7 @@ mod tests {
                     inputs: vec![data_id.clone()],
                     constraints: Vec::new(),
                     priority: None,
+                    timeout_ms: None,
                     module: None,
                 },
                 &gateway,

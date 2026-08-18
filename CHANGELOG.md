@@ -21,6 +21,11 @@ from 0.1.0 onward. Until then, `main` is the release.
   Dispatch was strictly first-come, first-served before this — and, since one
   task is dispatched at a time, a long backlog meant urgent work waited behind
   all of it.
+- **Queue policies**: `max_queue_size`, `queue_timeout_secs`, a per-task
+  `timeout_ms`, and a rejection policy of `reject`, `drop_oldest`, or
+  `drop_lowest_priority`. All off by default. Whatever the queue decides, the
+  caller is told — a refusal or an expiry comes back as an error rather than a
+  reply channel that never resolves.
 - **A terminal dashboard** (`aether-tui`). Throughput, what the mesh did not
   have to move, and which node holds what — plus sending a task from the
   dashboard to watch where it lands. It reconnects on its own and keeps the last
