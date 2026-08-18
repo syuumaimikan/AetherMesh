@@ -1,0 +1,31 @@
+name: Feature request
+description: Something the mesh should be able to do and cannot.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do
+      description: >
+        The situation, not the solution. What are you running, and where does
+        it stop being possible?
+      placeholder: |
+        I have three machines behind NAT and one with a public address. I want
+        the three to join through the public one, and today every agent has to
+        reach the controller directly.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you have in mind
+      description: If you have a design, describe it. If you do not, say so — that is fine.
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you tried instead
+      description: >
+        Workarounds, other tools, or the approach you rejected and why. This is
+        often the most useful part of the issue.

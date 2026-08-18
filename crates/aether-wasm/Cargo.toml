@@ -4,6 +4,12 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Sandboxed WebAssembly task execution for AetherMesh, on wasmi or wasmtime, with fuel and memory limits"
 
 [features]
 # Pure-Rust interpreter: builds anywhere, including Raspberry Pi, with no C

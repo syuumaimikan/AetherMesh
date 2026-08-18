@@ -407,8 +407,10 @@ or JIT).
 Issues and pull requests are welcome — the "what comes next" list above is the shortest path to something worth depending on. Keep changes focused, add tests, and run this before opening a PR:
 
 ```bash
-cargo fmt --all --check && cargo test --workspace
+cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace
 ```
+
+The longer version — what a good change looks like here, how the tests are named, what the commit messages are for — is in [`CONTRIBUTING.md`](CONTRIBUTING.md). Security problems go to [`SECURITY.md`](SECURITY.md) instead of the issue tracker.
 
 ---
 
@@ -416,10 +418,10 @@ cargo fmt --all --check && cargo test --workspace
 
 Dual-licensed under either of
 
-- Apache License, Version 2.0
-- MIT license
+- Apache License, Version 2.0 ([`LICENSE-APACHE`](LICENSE-APACHE))
+- MIT license ([`LICENSE-MIT`](LICENSE-MIT))
 
-at your option.
+at your option. Unless you state otherwise, any contribution you intentionally submit for inclusion is dual-licensed the same way, with no additional terms.
 
 ---
 

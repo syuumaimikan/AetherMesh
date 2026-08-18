@@ -16,6 +16,11 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/syuumaimikan/AetherMesh"
+homepage = "https://syuumaimikan.github.io/AetherMesh/"
+authors = ["AetherMesh contributors"]
+keywords = ["distributed", "scheduler", "wasm", "cluster", "mesh"]
+categories = ["concurrency", "network-programming", "wasm"]
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
