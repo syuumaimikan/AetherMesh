@@ -59,6 +59,7 @@ mod tests {
         round_trip(Message::RegisterAccepted {
             node_id,
             channel_token: None,
+            heartbeat_timeout_secs: 0,
         });
         round_trip(Message::Heartbeat {
             node_id,
@@ -79,6 +80,7 @@ mod tests {
         let mut bytes = encode(&Message::RegisterAccepted {
             node_id: NodeId::generate(),
             channel_token: None,
+            heartbeat_timeout_secs: 0,
         })
         .unwrap();
         bytes.push(0xff);

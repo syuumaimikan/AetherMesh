@@ -256,6 +256,7 @@ mod tests {
                 Message::RegisterAccepted {
                     node_id,
                     channel_token: None,
+                    heartbeat_timeout_secs: 0,
                 },
             )
             .unwrap();
@@ -264,7 +265,8 @@ mod tests {
             receiver.recv().await.unwrap(),
             Message::RegisterAccepted {
                 node_id,
-                channel_token: None
+                channel_token: None,
+                heartbeat_timeout_secs: 0
             }
         );
         assert!(connections.is_connected(node_id));
@@ -284,6 +286,7 @@ mod tests {
                 Message::RegisterAccepted {
                     node_id,
                     channel_token: None,
+                    heartbeat_timeout_secs: 0,
                 },
             )
             .unwrap_err();

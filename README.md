@@ -72,6 +72,12 @@ mesh.run("hash", payload, constraints=["gpu=true", "region!=us-east"])
 
 `key=value`, `key!=value`, and a bare `key` for "has this label at all". Constraints are a filter, not a preference — a task that nothing satisfies waits and reports it rather than landing on a machine that cannot do the job. This is how you keep GPU work off the CPU boxes and regulated data inside its jurisdiction.
 
+### An idle node costs almost nothing to keep
+
+A mesh spends most of its life with nothing to do, and a fixed heartbeat makes that the expensive state: every few seconds, on every machine, a core wakes up to say nothing has changed. So the interval is not fixed. A node running work — or one whose load has visibly moved, even from something the mesh did not start — reports at the configured rate. A node where nothing is happening doubles its gap each time.
+
+The ceiling is the controller's, not the agent's: it declares its eviction window at registration, and the agent stretches to at most half of it, so a single lost heartbeat still cannot evict a healthy node. Raise `heartbeat_timeout_secs` and idle nodes get quieter on their own.
+
 ### Failures are ordinary
 
 Heartbeats stop → the node is evicted and its data locations are forgotten. A node refuses a task → the task is re-dispatched to the next best node, data and all. A task that *ran* and failed is returned as a result, not retried forever.

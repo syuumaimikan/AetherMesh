@@ -1,5 +1,6 @@
 //! Agent side of the control connection: register, heartbeat, run assigned tasks.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -14,6 +15,7 @@ use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
 use crate::executor;
+use crate::heartbeat::HeartbeatPacer;
 use crate::metrics::MetricsCollector;
 
 /// Failure while talking to the controller.
@@ -47,6 +49,12 @@ pub struct AgentClient<S = OwnedReadHalf> {
     assembler: Arc<Mutex<ChunkAssembler>>,
     /// Proof that a data connection belongs to this node, issued at registration.
     channel_token: Option<String>,
+    /// How long the controller waits before evicting a silent node, as it
+    /// reported at registration. Bounds how far heartbeats may slow down.
+    heartbeat_timeout: Duration,
+    /// Counts messages that represent real work, so the heartbeat task can tell
+    /// an idle node from a working one without inspecting what it did.
+    activity: Arc<AtomicU64>,
 }
 
 impl AgentClient<OwnedReadHalf> {
@@ -84,11 +92,14 @@ where
         let node_id = info.id;
         write_message(&mut writer, &Message::register_with_token(info, token)).await?;
 
-        let channel_token = match read_message(&mut reader).await? {
+        let (channel_token, heartbeat_timeout) = match read_message(&mut reader).await? {
             Message::RegisterAccepted {
                 node_id: accepted,
                 channel_token,
-            } if accepted == node_id => channel_token,
+                heartbeat_timeout_secs,
+            } if accepted == node_id => {
+                (channel_token, Duration::from_secs(heartbeat_timeout_secs))
+            }
             Message::RegisterAccepted {
                 node_id: accepted, ..
             } => {
@@ -117,6 +128,8 @@ where
             store: DataStore::new(),
             assembler: Arc::new(Mutex::new(ChunkAssembler::new())),
             channel_token,
+            heartbeat_timeout,
+            activity: Arc::new(AtomicU64::new(0)),
         })
     }
 
@@ -127,6 +140,14 @@ where
     /// Data this node currently holds.
     pub fn store(&self) -> &DataStore {
         &self.store
+    }
+
+    /// The eviction window the controller declared at registration.
+    ///
+    /// `Duration::ZERO` means it declared none, and heartbeats stay at the
+    /// configured rate rather than backing off into a guess.
+    pub fn heartbeat_timeout(&self) -> Duration {
+        self.heartbeat_timeout
     }
 
     /// Queues one heartbeat.
@@ -145,7 +166,12 @@ where
     ///
     /// Task execution runs on a blocking thread so heartbeats keep flowing.
     pub async fn handle_next(&mut self) -> Result<(), ClientError> {
-        match read_message(&mut self.reader).await? {
+        let message = read_message(&mut self.reader).await?;
+        // Anything that arrives means this node is not idle, so the heartbeat
+        // pacer stops stretching its interval.
+        self.activity.fetch_add(1, Ordering::Relaxed);
+
+        match message {
             Message::DataTransfer {
                 descriptor,
                 codec,
@@ -336,6 +362,10 @@ where
     ///
     /// Heartbeats run in their own task rather than in a `select!` arm: reading a
     /// frame is not cancel-safe, and dropping a half-read frame desyncs the stream.
+    ///
+    /// `interval` is the rate for a node that is doing something. An idle node
+    /// stretches the gap up to half the controller's eviction timeout — see
+    /// [`crate::heartbeat`] for why that is the ceiling.
     pub async fn run(
         &mut self,
         mut collector: MetricsCollector,
@@ -343,12 +373,17 @@ where
     ) -> Result<(), ClientError> {
         let node_id = self.node_id;
         let sender = self.outbound.clone();
+        let activity = self.activity.clone();
         let interval = interval.max(crate::MIN_SAMPLE_INTERVAL);
+        let ceiling = HeartbeatPacer::ceiling_for_timeout(interval, self.heartbeat_timeout);
 
         let _heartbeats = AbortOnDrop(tokio::spawn(async move {
-            let mut ticker = tokio::time::interval(interval);
+            let mut pacer = HeartbeatPacer::new(interval, ceiling);
+            let mut seen = activity.load(Ordering::Relaxed);
+
             loop {
-                ticker.tick().await;
+                tokio::time::sleep(pacer.interval()).await;
+
                 let metrics = collector.sample();
                 if sender
                     .send(Message::Heartbeat { node_id, metrics })
@@ -356,7 +391,18 @@ where
                 {
                     break;
                 }
-                debug!(%node_id, cpu = metrics.cpu_usage, "heartbeat sent");
+
+                let now = activity.load(Ordering::Relaxed);
+                let did_work = now != seen;
+                seen = now;
+
+                let next = pacer.record(metrics, did_work);
+                debug!(
+                    %node_id,
+                    cpu = metrics.cpu_usage,
+                    next_secs = next.as_secs_f32(),
+                    "heartbeat sent"
+                );
             }
         }));
 

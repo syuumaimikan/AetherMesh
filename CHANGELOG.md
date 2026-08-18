@@ -15,6 +15,11 @@ from 0.1.0 onward. Until then, `main` is the release.
   Constraints filter before any scoring, so a task no node satisfies is
   refused rather than placed somewhere it was not allowed. Carried through the
   client API and all three SDKs.
+- **Idle heartbeat backoff.** An idle node doubles the gap between heartbeats
+  up to half the controller's eviction window, which the controller now
+  declares at registration; work or a real change in load snaps it straight
+  back. A mesh spends most of its life idle, and that was the state costing the
+  most power.
 - **Result cache.** Repeated work keyed by content-addressed identity — task
   kind, payload hash, module, and inputs. Failures are never cached. Size and
   TTL are configurable; hit and miss counts are reported.

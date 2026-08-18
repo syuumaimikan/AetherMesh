@@ -131,6 +131,31 @@ async fn agent_registers_and_appears_in_the_registry() {
 }
 
 #[tokio::test]
+async fn the_agent_learns_the_eviction_window_it_is_held_to() {
+    let state = MeshState::new().with_heartbeat_timeout(Duration::from_secs(60));
+    let (listener, addr) = bind("127.0.0.1:0".parse().unwrap()).await.unwrap();
+    tokio::spawn(async move {
+        let _ = serve(listener, state, SecurityConfig::open()).await;
+    });
+
+    let info = NodeInfo::new(NodeId::generate(), "laptop", "127.0.0.1:7001", 4);
+    let client = AgentClient::connect(addr, info).await.unwrap();
+
+    // Without this the agent cannot slow its heartbeats down safely: it would
+    // be choosing a gap against an eviction deadline it cannot see.
+    assert_eq!(client.heartbeat_timeout(), Duration::from_secs(60));
+}
+
+#[tokio::test]
+async fn a_controller_that_declares_no_window_leaves_heartbeats_alone() {
+    let harness = Harness::start().await;
+    let info = NodeInfo::new(NodeId::generate(), "desktop", "127.0.0.1:7001", 4);
+    let client = AgentClient::connect(harness.addr, info).await.unwrap();
+
+    assert_eq!(client.heartbeat_timeout(), Duration::ZERO);
+}
+
+#[tokio::test]
 async fn heartbeats_update_the_stored_metrics() {
     let harness = Harness::start().await;
     let info = NodeInfo::new(NodeId::generate(), "desktop", "127.0.0.1:7001", 4);

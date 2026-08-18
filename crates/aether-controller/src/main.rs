@@ -154,7 +154,9 @@ async fn main() -> anyhow::Result<()> {
         config.auth_token = args.auth_token.clone();
     }
 
-    let state = MeshState::new();
+    // Agents are told the eviction window at registration, so an idle one can
+    // slow its heartbeats down to the edge of it and no further.
+    let state = MeshState::new().with_heartbeat_timeout(config.heartbeat_timeout());
     let (listener, addr) = bind(config.listen).await?;
     info!(
         %addr,

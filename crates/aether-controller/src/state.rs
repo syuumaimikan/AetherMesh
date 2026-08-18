@@ -22,11 +22,28 @@ pub struct MeshState {
     pub connections: Connections,
     pub catalog: DataCatalog,
     pub metrics: MeshMetrics,
+    /// How long a node may stay silent before it is evicted.
+    ///
+    /// The eviction monitor enforces it; registration reports it, so an idle
+    /// agent knows how far it may slow its heartbeats down without guessing.
+    /// `None` means the agent is told nothing and should not slow down at all.
+    heartbeat_timeout: Option<std::time::Duration>,
 }
 
 impl MeshState {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Declares the eviction window agents are held to.
+    pub fn with_heartbeat_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.heartbeat_timeout = Some(timeout);
+        self
+    }
+
+    /// The eviction window, as reported to agents at registration.
+    pub fn heartbeat_timeout(&self) -> Option<std::time::Duration> {
+        self.heartbeat_timeout
     }
 
     /// Snapshot of the registered nodes, for the scheduler.

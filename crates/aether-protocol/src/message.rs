@@ -37,10 +37,17 @@ pub enum Message {
     /// `channel_token` is what the agent presents when it opens extra data
     /// connections. It proves those connections belong to this node, which the
     /// mesh token — shared by every agent — cannot.
+    ///
+    /// `heartbeat_timeout_secs` is how long the controller waits before
+    /// evicting a silent node. The agent needs it to know how far it may slow
+    /// its heartbeats down while idle; guessing would either waste power or
+    /// get the node evicted. `0` means the agent should not slow down at all.
     RegisterAccepted {
         node_id: NodeId,
         #[serde(default)]
         channel_token: Option<String>,
+        #[serde(default)]
+        heartbeat_timeout_secs: u64,
     },
     /// Controller -> agent: registration refused; the connection then closes.
     RegisterRejected { reason: String },

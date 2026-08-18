@@ -142,6 +142,10 @@ where
                     .send(Message::RegisterAccepted {
                         node_id,
                         channel_token: Some(channel_token),
+                        heartbeat_timeout_secs: state
+                            .heartbeat_timeout()
+                            .map(|timeout| timeout.as_secs())
+                            .unwrap_or(0),
                     })
                     .is_err()
                 {
