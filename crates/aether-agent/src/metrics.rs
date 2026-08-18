@@ -10,8 +10,11 @@ pub const MIN_SAMPLE_INTERVAL: Duration = sysinfo::MINIMUM_CPU_UPDATE_INTERVAL;
 
 /// Samples CPU and memory usage of the machine the agent runs on.
 ///
-/// CPU usage is measured between consecutive samples, so the first value is
-/// always `0.0`; wait at least [`MIN_SAMPLE_INTERVAL`] before reading again.
+/// CPU usage is a difference between consecutive samples, so a sample taken
+/// immediately after construction reports whatever the near-zero interval
+/// happened to produce — anywhere from 0 % to 100 %, depending on the platform.
+/// Wait at least [`MIN_SAMPLE_INTERVAL`] before reading a number you intend to
+/// act on.
 pub struct MetricsCollector {
     system: System,
 }
@@ -61,8 +64,16 @@ pub fn hostname() -> String {
 }
 
 /// Describes this machine for registration, including a first metrics sample.
+///
+/// Blocks for [`MIN_SAMPLE_INTERVAL`] first. CPU usage is a difference between
+/// two samples, and two samples taken back to back produce a number that is not
+/// merely imprecise but arbitrary — a node registering with a fabricated 100 %
+/// gets no work until its first heartbeat corrects it, and one registering with
+/// a fabricated 0 % gets everyone's.
 pub fn local_node_info(id: NodeId, address: impl Into<String>) -> NodeInfo {
     let mut collector = MetricsCollector::new();
+    std::thread::sleep(MIN_SAMPLE_INTERVAL);
+
     let mut info = NodeInfo::new(id, hostname(), address, collector.cpu_cores());
     info.update_metrics(collector.sample());
     info
@@ -91,5 +102,17 @@ mod tests {
         let info = local_node_info(NodeId::generate(), "127.0.0.1:7000");
         assert!(!info.hostname.is_empty());
         assert!(info.cpu_cores >= 1);
+    }
+
+    #[test]
+    fn registration_waits_long_enough_for_a_real_first_sample() {
+        let started = std::time::Instant::now();
+        let info = local_node_info(NodeId::generate(), "127.0.0.1:7000");
+
+        // Without the wait the CPU figure is arbitrary, and the scheduler acts
+        // on it until the first heartbeat replaces it.
+        assert!(started.elapsed() >= MIN_SAMPLE_INTERVAL);
+        assert!((0.0..=1.0).contains(&info.metrics.cpu_usage));
+        assert!(info.metrics.memory_total_bytes > 0);
     }
 }

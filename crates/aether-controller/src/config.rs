@@ -36,6 +36,12 @@ pub struct ControllerConfig {
     pub tls_client_ca_path: Option<PathBuf>,
     /// Seconds between metrics log lines. Zero turns them off.
     pub metrics_interval_secs: u64,
+    /// Address to serve `/metrics` and `/healthz` on. Omit to serve neither.
+    ///
+    /// The endpoint has no authentication and reports only counters and
+    /// averages — no hostnames, ids, or addresses — but bind it to localhost
+    /// or a management interface anyway.
+    pub metrics_listen: Option<SocketAddr>,
     /// Seconds between link measurements. Zero turns probing off, leaving the
     /// scheduler on whatever latency and bandwidth were configured by hand.
     pub probe_interval_secs: u64,
@@ -65,6 +71,7 @@ impl Default for ControllerConfig {
             tls_key_path: None,
             tls_client_ca_path: None,
             metrics_interval_secs: 60,
+            metrics_listen: None,
             probe_interval_secs: 60,
             probe_bytes: crate::probe::DEFAULT_PROBE_BYTES,
             result_cache_entries: 0,

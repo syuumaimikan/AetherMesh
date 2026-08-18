@@ -190,6 +190,27 @@ Registration is refused — and counted — when the token is missing or wrong. 
 
 ---
 
+## Watching it run
+
+```bash
+aether-controller --metrics-listen 127.0.0.1:9100
+curl 127.0.0.1:9100/metrics
+```
+
+```
+aethermesh_nodes_registered_total 1
+aethermesh_heartbeats_total 1
+aethermesh_tasks_completed_total 0
+# TYPE aethermesh_nodes gauge
+aethermesh_nodes 1
+aethermesh_nodes_connected 1
+aethermesh_cpu_usage_mean 0.007223892025649548
+```
+
+Prometheus text on `/metrics`, a liveness check on `/healthz`. It is off unless you ask for it, and it reports counters and averages only — no hostnames, ids, or addresses, because an unauthenticated port should not double as an inventory of your network. Bind it to localhost anyway.
+
+---
+
 ## Architecture
 
 ```mermaid

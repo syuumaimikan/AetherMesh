@@ -92,6 +92,22 @@ does with the buffer it filled, so the weaker generator this used to have was
 a trap: it looked random and was not. If the OS refuses entropy the call
 returns `-2` rather than a buffer of zeroes.
 
+## The telemetry endpoint
+
+`--metrics-listen` serves `/metrics` and `/healthz` over plain HTTP with **no
+authentication**. It is off unless you ask for it, and it is built on the
+assumption that it will eventually end up somewhere more convenient than safe:
+
+- Counters and aggregate gauges only. No hostnames, no node ids, no addresses,
+  no labels, no task payloads. A per-node metric label would turn an open port
+  into an inventory of your network, so there are none.
+- Read-only. `GET` and `HEAD`; everything else is a 405.
+- Bounded reads, so a client that never sends a newline is disconnected rather
+  than accumulated.
+
+Bind it to localhost or a management interface. If you need it authenticated,
+put it behind whatever already fronts your other metrics endpoints.
+
 ## What is deliberately out of scope
 
 - **Malicious modules exhausting CPU.** Fuel bounds a single task; a client

@@ -195,6 +195,29 @@ desktop = "…"
 
 ---
 
+## 動いているところを見る
+
+```bash
+aether-controller --metrics-listen 127.0.0.1:9100
+curl 127.0.0.1:9100/metrics
+```
+
+```
+aethermesh_nodes_registered_total 1
+aethermesh_heartbeats_total 1
+aethermesh_tasks_completed_total 0
+# TYPE aethermesh_nodes gauge
+aethermesh_nodes 1
+aethermesh_nodes_connected 1
+aethermesh_cpu_usage_mean 0.007223892025649548
+```
+
+`/metrics` が Prometheus 形式、`/healthz` が死活確認です。指定しない限り起動しません。
+
+出すのはカウンタと平均値だけで、ホスト名・ノード ID・アドレスは含めていません。認証のないポートが、そのままネットワークの一覧表になってしまうからです。それでも localhost か管理用インタフェースに bind してください。
+
+---
+
 ## ベンチマーク
 
 ### 既存システム（Dask）との比較

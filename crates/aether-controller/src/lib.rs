@@ -14,6 +14,7 @@ pub mod security;
 pub mod server;
 pub mod sim;
 pub mod state;
+pub mod telemetry;
 
 #[cfg(feature = "tls")]
 pub mod tls;
@@ -35,6 +36,7 @@ pub use security::{AuthError, SecurityConfig};
 pub use server::{bind, serve};
 pub use sim::SimulatedMesh;
 pub use state::{MeshState, SharedRegistry, shared_registry};
+pub use telemetry::{bind_metrics, serve_metrics};
 
 #[cfg(feature = "tls")]
 pub use tls::{TlsConfig, TlsError, serve_clients_tls, serve_tls};

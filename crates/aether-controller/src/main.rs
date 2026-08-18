@@ -31,6 +31,10 @@ struct Args {
     #[arg(long)]
     no_client_api: bool,
 
+    /// Address to serve `/metrics` (Prometheus) and `/healthz` on.
+    #[arg(long)]
+    metrics_listen: Option<SocketAddr>,
+
     /// Seconds without a heartbeat before a node is evicted.
     #[arg(long)]
     heartbeat_timeout_secs: Option<u64>,
@@ -153,6 +157,9 @@ async fn main() -> anyhow::Result<()> {
     if args.auth_token.is_some() {
         config.auth_token = args.auth_token.clone();
     }
+    if args.metrics_listen.is_some() {
+        config.metrics_listen = args.metrics_listen;
+    }
 
     // Agents are told the eviction window at registration, so an idle one can
     // slow its heartbeats down to the edge of it and no further.
@@ -182,6 +189,16 @@ async fn main() -> anyhow::Result<()> {
             state.clone(),
             Duration::from_secs(config.metrics_interval_secs),
         ));
+    }
+    if let Some(metrics_addr) = config.metrics_listen {
+        let (listener, metrics_addr) = aether_controller::bind_metrics(metrics_addr).await?;
+        info!(%metrics_addr, "serving /metrics and /healthz");
+        let state = state.clone();
+        tokio::spawn(async move {
+            aether_controller::telemetry::report_metrics_exit(
+                aether_controller::serve_metrics(listener, state).await,
+            );
+        });
     }
 
     // The client API is what non-Rust callers use: publish data, submit tasks.
