@@ -175,6 +175,27 @@ footer a { color: var(--muted); }
         <p>Tasks are WebAssembly with a fuel budget and no host access. An endless
            loop costs one task, not the node.</p>
       </div>
+      <div class="card">
+        <div class="icon b">⌗</div>
+        <h3>Some machines are not interchangeable</h3>
+        <p>Nodes declare what they are — <code>gpu=true</code>,
+           <code>region=eu-west</code> — and a task says what it needs. If nothing
+           qualifies, the task is refused rather than placed somewhere it was not
+           allowed.</p>
+      </div>
+      <div class="card">
+        <div class="icon g">◐</div>
+        <h3>Idle costs almost nothing</h3>
+        <p>A node with nothing to do doubles the gap between heartbeats, up to
+           half the controller's eviction window. Work, or a real change in load,
+           snaps it straight back.</p>
+      </div>
+      <div class="card">
+        <div class="icon y">↯</div>
+        <h3>Small enough for a Pi</h3>
+        <p>A 1.3 MB controller and a 2.7 MB agent, pure Rust, no C toolchain to
+           cross-compile for <code>aarch64</code> or <code>armv7</code>.</p>
+      </div>
     </div>
   </div>
 </section>
@@ -284,8 +305,9 @@ with AetherMesh.connect(port=7100) as mesh:
 <section class="alt" id="languages">
   <div class="wrap">
     <h2>Your language, someone else's machine</h2>
-    <p class="sub">Submit work from Node, Python, or Go with a dependency-free SDK. Write the
-       work itself in anything that compiles to WebAssembly.</p>
+    <p class="sub">Submit work from TypeScript, Python, Go, Java, or C# with a
+       dependency-free SDK. Write the work itself in anything that compiles to
+       WebAssembly.</p>
 
     <div class="grid">
       <div class="card">
@@ -307,12 +329,31 @@ data, _ := mesh.Publish(payload)
 mesh.Run("hash", nil, []string{data.DataID})</code></pre>
       </div>
       <div class="card">
-        <h3>Anything else</h3>
-        <p>The client protocol is four bytes of length and one JSON object, both
-           directions — about two hundred lines to port. The three SDKs above are
-           each roughly that size.</p>
+        <h3>Java</h3>
+<pre><code>try (var mesh = AetherMesh.connect(opts)) {
+    var data = mesh.publish(payload);
+    mesh.run("hash", seed, List.of(data.dataId()), List.of());
+}</code></pre>
+      </div>
+      <div class="card">
+        <h3>C#</h3>
+<pre><code>await using var mesh = await MeshClient.ConnectAsync(opts);
+var data = await mesh.PublishAsync(payload);
+await mesh.RunAsync("hash", seed, inputs: [data.DataId]);</code></pre>
+      </div>
+      <div class="card">
+        <h3>Already using a thread pool?</h3>
+        <p>The Python SDK ships a real <code>concurrent.futures.Executor</code>,
+           so <code>submit</code>, <code>map</code>, and <code>as_completed</code>
+           keep working — only the constructor changes.</p>
+<pre><code>with MeshExecutor.connect(port=7100) as pool:
+    pool.map(pool.builtin("hash"), payloads)</code></pre>
       </div>
     </div>
+
+    <p class="sub">Your language is not here? The client protocol is four bytes
+       of length and one JSON object, both directions — about two hundred lines
+       to port, which is what each SDK above actually is.</p>
   </div>
 </section>
 
@@ -322,8 +363,9 @@ mesh.Run("hash", nil, []string{data.DataID})</code></pre>
     <div class="grid">
       <div class="card">
         <h3>Examples</h3>
-        <p>One terminal, several terminals, two devices, a web page, a Python
-           pipeline, a WASM task, a secured mesh.
+        <p>Ten of them: one terminal, several terminals, two devices, a web page,
+           a Python pipeline, a WASM task, a secured mesh, labelled nodes, and a
+           drop-in thread pool.
            <a href="https://github.com/syuumaimikan/AetherMesh/tree/main/examples">Browse →</a></p>
       </div>
       <div class="card">
