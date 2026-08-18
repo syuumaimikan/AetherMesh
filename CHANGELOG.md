@@ -21,6 +21,12 @@ from 0.1.0 onward. Until then, `main` is the release.
   Dispatch was strictly first-come, first-served before this — and, since one
   task is dispatched at a time, a long backlog meant urgent work waited behind
   all of it.
+- **Independent workflow steps run at the same time.** A workflow's wall clock
+  was the sum of its steps even when its branches had nothing to do with each
+  other. Whether those branches land on different machines is now a real
+  choice: six branches on six nodes take 36 ms on one node by default, or
+  13 ms across four with `locality = 0.0` — 2.8x faster, paid for by copying
+  the intermediate result.
 - **The mesh runs more than one task at a time.** Dispatch needed exclusive
   access to the controller, so however many nodes were registered, exactly one
   task was ever in flight. `TaskTransport` now takes `&self` and the

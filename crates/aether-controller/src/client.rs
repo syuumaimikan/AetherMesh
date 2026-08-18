@@ -525,17 +525,17 @@ fn admit<S, T>(
 
 /// Runs a whole workflow and renders the outcome for a client.
 async fn run_flow<S, T>(
-    controller: &Controller<S, T>,
+    controller: &std::sync::Arc<Controller<S, T>>,
     state: &MeshState,
     workflow: &aether_core::Workflow,
 ) -> ClientResponse
 where
-    S: aether_scheduler::Scheduler,
-    T: TaskTransport + Send + Sync,
+    S: aether_scheduler::Scheduler + Send + Sync + 'static,
+    T: TaskTransport + Send + Sync + 'static,
 {
     controller.sync_registry(state.nodes());
 
-    match crate::flow::run_workflow(controller, workflow).await {
+    match crate::flow::run_workflow(controller.clone(), workflow).await {
         Ok(flow) => ClientResponse::Workflow {
             steps: flow
                 .results

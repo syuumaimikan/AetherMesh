@@ -92,7 +92,14 @@ There is no separate rule making that happen. A task's output is kept on the nod
 
 Cycles and dependencies on steps that do not exist are refused before anything runs; a step that fails stops what waits on it and says which steps it skipped.
 
-**A workflow runs one step at a time**, including steps that do not depend on each other, so its wall clock is the sum of its steps. Turning the locality weight off does not spread independent branches either — measured, and it changes nothing, because with sequential dispatch there is never any contention to spread. Both are limitations rather than choices. [`examples/11-workflow`](examples/11-workflow).
+Independent steps run at the same time. Whether they run on different *machines* is the trade-off — one root, six branches, one join, on six nodes:
+
+| `[scheduler_weights]` | branches on | wall | overlap |
+|---|---|---:|---:|
+| `locality = 1.0` (default) | 1 node | 36 ms | 1.0x |
+| `locality = 0.0` | 4 nodes | 13 ms | **2.7x** |
+
+By default every branch follows the root's data and nothing moves. Spread them and it is 2.8× faster, paid for by copying the intermediate result. Cheap branches over expensive data want one, expensive branches over cheap data want the other; what you should not have to do is guess which you are getting. [`examples/11-workflow`](examples/11-workflow).
 
 ### Some machines are not interchangeable
 

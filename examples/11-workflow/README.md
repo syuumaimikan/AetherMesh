@@ -66,30 +66,32 @@ Steps 1 and 2 are independent and step 3 waits for both, reading both.
 In practice they will land on the *same* node, and not because of the locality
 score — see below.
 
-## Why a workflow uses one node
+## Concentrate, or spread
 
-Measured, then measured again with the placement weights turned against it:
+Independent steps run at the same time. Whether they run on *different
+machines* is a choice, and it is the trade-off this project exists to make
+explicit.
 
-```
-default weights (locality = 1.0)     placement: 0->9bb19595 1->9bb19595 2->9bb19595 3->9bb19595
-locality = 0.0, transfer = 0.0       placement: 0->b821ad5e 1->b821ad5e 2->b821ad5e 3->b821ad5e
-```
+One root, six independent branches, one join, on a six-node mesh:
 
-Turning locality off changes nothing. So the concentration is **not** the
-locality bonus doing its job, which is what it looks like. Two other things
-cause it:
+| `[scheduler_weights]` | branches landed on | wall | overlap |
+|---|---|---:|---:|
+| `locality = 1.0` (default) | 1 node | 36 ms | 1.0x |
+| `locality = 0.0` | 4 nodes | 13 ms | **2.7x** |
 
-1. **Steps are dispatched one at a time.** `run_workflow` awaits each step
-   before starting the next, so exactly one task is ever in flight. Spreading
-   independent steps across nodes cannot save wall clock when they were never
-   going to overlap. This is a real limitation, not a tuning choice.
-2. **Load metrics lag by a heartbeat.** A node that has just been given work
-   does not look busier until it reports again, so on a homogeneous mesh every
-   node scores identically and the deterministic tie-break picks the same one.
+By default every branch follows the root's output to the node holding it, so
+nothing moves and nothing overlaps. Turn locality off and the work spreads: 2.8
+times faster, paid for by copying the intermediate result to each node that
+took a branch.
 
-Locality weighting is still what keeps a *chain* still — there the data
-genuinely is on one node and moving it would cost. But for independent
-branches, the reason they do not spread is the two above.
+Neither is right for everybody. Cheap branches over expensive data want the
+default; expensive branches over cheap data want the other. What you should not
+have to do is guess which one you are getting.
+
+**This measurement used to say something different.** Before workflow steps ran
+concurrently, turning locality off changed nothing at all — there was no second
+task in flight to put anywhere. The knob existed and did nothing. It does
+something now.
 
 ## When it goes wrong
 
