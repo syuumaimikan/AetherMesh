@@ -150,6 +150,9 @@ fn is_retryable(error: &DispatchError) -> bool {
     )
 }
 
+/// Held while one dataset is on its way to one node.
+type TransferLock = Arc<tokio::sync::Mutex<()>>;
+
 /// Owns the registry and drives task placement.
 pub struct Controller<S, T> {
     registry: Arc<Mutex<NodeRegistry>>,
@@ -184,6 +187,15 @@ pub struct Controller<S, T> {
     /// The last few finished tasks, so a watcher can see what ran rather than
     /// only how many. Shared: the client API reads it while this task writes.
     history: crate::history::History,
+    /// One lock per (node, dataset) being transferred right now.
+    ///
+    /// Two tasks dispatched at the same time can want the same input on the
+    /// same node. Without this they both send it: the bytes go twice, and —
+    /// worse — the agent sees two interleaved chunk streams for one dataset
+    /// and rejects the ones whose manifest it has not seen. Measured before
+    /// this existed: sixteen concurrent tasks over one 4 MiB dataset moved
+    /// 20 MiB across three nodes and retried eleven times.
+    transfers: Arc<Mutex<HashMap<(NodeId, DataId), TransferLock>>>,
     /// Where finished workflow steps are recorded, when the operator asked for
     /// it. Shared because a workflow's steps run concurrently and each one
     /// records itself as it lands.
@@ -210,6 +222,7 @@ impl<S: Scheduler, T: TaskTransport + Send + Sync> Controller<S, T> {
             cache: None,
             traffic: crate::observability::TrafficStats::new(),
             history: crate::history::History::default(),
+            transfers: Arc::new(Mutex::new(HashMap::new())),
             checkpoint: None,
         }
     }
@@ -513,9 +526,18 @@ impl<S: Scheduler, T: TaskTransport + Send + Sync> Controller<S, T> {
     )]
     async fn ensure_inputs(&self, node_id: NodeId, task: &Task) -> Result<(), DispatchError> {
         for data_id in &task.inputs {
+            // One transfer of a dataset to a node at a time. Whoever gets here
+            // second waits, and then finds the catalog already says the node
+            // has it — so the second check below is not redundant with the
+            // first, it is the whole point.
+            let transfer = self.transfer_lock(node_id, *data_id);
+            let guard = transfer.lock().await;
+
             if self.reuse_data && self.catalog.holds(*data_id, node_id) {
                 self.traffic.record_transfer_skipped();
                 debug!(%node_id, %data_id, "input already on the node");
+                drop(guard);
+                self.release_transfer(node_id, *data_id, transfer);
                 continue;
             }
 
@@ -544,8 +566,35 @@ impl<S: Scheduler, T: TaskTransport + Send + Sync> Controller<S, T> {
 
             self.catalog.record(descriptor, node_id);
             debug!(%node_id, %data_id, size = descriptor.size_bytes, "input transferred");
+            drop(guard);
+            self.release_transfer(node_id, *data_id, transfer);
         }
         Ok(())
+    }
+
+    /// The lock covering "this dataset going to this node", creating it if
+    /// this is the first task to want it.
+    fn transfer_lock(&self, node_id: NodeId, data_id: DataId) -> TransferLock {
+        self.transfers
+            .lock()
+            .expect("transfer mutex poisoned")
+            .entry((node_id, data_id))
+            .or_default()
+            .clone()
+    }
+
+    /// Forgets the lock once nobody else is holding it.
+    ///
+    /// Without this the map grows by one entry per dataset per node and never
+    /// shrinks, which on a long-lived controller is a slow leak rather than a
+    /// bug you would notice.
+    fn release_transfer(&self, node_id: NodeId, data_id: DataId, transfer: TransferLock) {
+        let mut transfers = self.transfers.lock().expect("transfer mutex poisoned");
+        // Two references: the map's and ours. Anything more means somebody
+        // else is waiting on it and it has to stay.
+        if Arc::strong_count(&transfer) <= 2 {
+            transfers.remove(&(node_id, data_id));
+        }
     }
 
     /// The node list as the scheduler should see it: reported load, plus the
@@ -895,6 +944,100 @@ mod tests {
             .unwrap();
 
         assert_eq!(controller.data_bytes_sent(), 128 * 1024);
+    }
+
+    /// A transport that counts transfers and takes long enough for a second
+    /// dispatch to arrive while the first is still sending.
+    struct SlowTransfer {
+        sends: Arc<Mutex<Vec<(NodeId, DataId)>>>,
+        takes: Duration,
+    }
+
+    impl TaskTransport for SlowTransfer {
+        async fn dispatch(
+            &self,
+            node_id: NodeId,
+            task: &Task,
+        ) -> Result<TaskResult, DispatchError> {
+            Ok(TaskResult::success(
+                task.id,
+                node_id,
+                b"ok".to_vec(),
+                Duration::from_millis(1),
+            ))
+        }
+
+        async fn send_data(
+            &self,
+            node_id: NodeId,
+            descriptor: DataDescriptor,
+            _codec: Codec,
+            _bytes: &[u8],
+        ) -> Result<(), DispatchError> {
+            tokio::time::sleep(self.takes).await;
+            self.sends
+                .lock()
+                .expect("sends mutex poisoned")
+                .push((node_id, descriptor.id));
+            Ok(())
+        }
+
+        async fn send_manifest(
+            &self,
+            _node_id: NodeId,
+            _manifest: &ChunkManifest,
+        ) -> Result<(), DispatchError> {
+            Ok(())
+        }
+
+        async fn send_chunk(
+            &self,
+            _node_id: NodeId,
+            _data_id: DataId,
+            _index: u32,
+            _codec: Codec,
+            _bytes: &[u8],
+        ) -> Result<(), DispatchError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn one_dataset_reaches_a_node_once_however_many_tasks_want_it() {
+        let sends = Arc::new(Mutex::new(Vec::new()));
+        let controller = Arc::new(Controller::new(
+            LeastLoadedScheduler::new(),
+            SlowTransfer {
+                sends: sends.clone(),
+                takes: Duration::from_millis(50),
+            },
+            DataCatalog::new(),
+        ));
+        controller.register(node("only", 0.1));
+
+        // Small enough not to be chunked, so every transfer is one send_data.
+        let descriptor = controller.publish(vec![0xab; 4096]);
+
+        // Eight tasks reading the same input, dispatched at once. Before this
+        // was single-flighted they all sent it: the bytes went eight times,
+        // and the agent rejected chunk streams it had no manifest for.
+        let mut running = tokio::task::JoinSet::new();
+        for _ in 0..8 {
+            let controller = controller.clone();
+            let input = descriptor.id;
+            running.spawn(async move {
+                controller
+                    .submit(Task::new(kind::ECHO, Vec::new()).with_inputs(vec![input]))
+                    .await
+            });
+        }
+        while let Some(finished) = running.join_next().await {
+            assert!(finished.unwrap().is_ok());
+        }
+
+        let sends = sends.lock().unwrap();
+        assert_eq!(sends.len(), 1, "sent {} times: {sends:?}", sends.len());
+        assert_eq!(controller.transfers_skipped(), 7);
     }
 
     /// A transport where a chosen set of nodes is unreachable.

@@ -28,6 +28,27 @@ from 0.1.0 onward. Until then, `main` is the release.
 - **A workflow result says which step it belongs to.** `StepOutcome.step` was
   the position in the reply, so a workflow with a skipped step blamed the
   wrong step for everything after it.
+- **Fixed: concurrent tasks sharing an input sent it more than once.** Two
+  tasks dispatched at the same time, both wanting the same dataset on the same
+  node, both sent it. The chunk streams interleaved, the agent rejected chunks
+  whose manifest it had not seen, and the controller retried elsewhere.
+  Measured on sixteen concurrent tasks over one 4 MiB dataset: 20 MiB moved
+  and eleven retries, against 3 MiB and none after the fix — and 118 ms
+  against 10 ms. Transfers are single-flighted per (node, dataset) now, and a
+  regression test fails without it.
+
+- **Five more examples**, covering the two shapes people actually arrive with:
+  a web service in front of the mesh ([`14-web-service`](examples/14-web-service),
+  [`15-web-dashboard`](examples/15-web-dashboard)) and software integration
+  ([`16-nightly-pipeline`](examples/16-nightly-pipeline),
+  [`17-ci-shards`](examples/17-ci-shards),
+  [`18-embedded`](examples/18-embedded)). Every number in them was measured on
+  a live mesh; the transfer bug above was found by writing one of them.
+
+- **`priority` and `timeout_ms` on the Python and TypeScript SDKs' `run()`.**
+  The client API has had both since the queue landed; the SDKs had not caught
+  up, so no SDK caller could say a task was urgent.
+
 - **The Python and TypeScript SDKs reach the whole client API.** `workflow()`
   (with `run` for resume), `recent()`, `stats()`, and the node fields added
   since they were written — `address`, `latency_ms`, `datasets_held`,

@@ -1,11 +1,11 @@
-phase=sdk-catchup-py-ts
+phase=examples-web-and-software
 status=complete
 next=A4-quic, A20-A23, SDK catch-up for go/java/dotnet
 
 # Working notes for whoever picks this up next. Not documentation — the READMEs
 # and docs/ are. This is the stuff that would otherwise have to be rediscovered.
 
-test counts: 478 default / 533 with tls + cloud-http + otel (both crates)
+test counts: 479 default / 534 with tls + cloud-http + otel (both crates)
 
 ## Advanced phases
 
@@ -93,6 +93,36 @@ completed:
   locality=1.0 -> 1 node, 36 ms, 1.0x. locality=0.0 -> 4 nodes, 13 ms, 2.7x.
   In A9 that same comparison showed no difference at all, because there was
   never a second task in flight. Docs corrected in three places.
+
+- examples 14-18 (web x2, software x3) + a real bug they found:
+
+  14-web-service: pool.mjs. ONE CONNECTION IS ONE QUEUE - the protocol matches
+  replies to requests in order, so a slow task blocks the socket. 32 concurrent
+  requests: POOL_SIZE=1 -> 242 ms on 1 node; POOL_SIZE=8 -> 72 ms on 3. A
+  serialised client makes a parallel mesh look like one machine.
+  15-web-dashboard: SSE, one poll shared by every viewer. Verified by reading
+  the rendered page out of a real browser.
+  16-nightly-pipeline: resume, where the FIX IS OPERATIONAL (a missing labelled
+  node), because repairing the workflow changes the fingerprint and is refused.
+  17-ci-shards: measures queue depth and submits critical+normal at the same
+  moment - one priority run alone proves nothing. 104 deep: 90 ms vs 211 ms.
+  Needs --max-concurrent-tasks 1 agents to have a queue at all, and says so
+  when no queue formed.
+  18-embedded: cargo example (crates/aether-controller/examples/embedded.rs) so
+  it cannot rot.
+
+  BUG FOUND BY WRITING 18, fixed here: concurrent tasks wanting the same input
+  on the same node ALL sent it. Chunk streams interleaved -> agent rejected
+  chunks with no manifest -> controller retried elsewhere. Also
+  connections::expect_data is keyed (node,data) and insert() overwrote the
+  first waiter, resolving it as "connection closed". 16 tasks / 4 MiB:
+  20 MiB + 11 retries + 118 ms -> 3 MiB + 0 + 10 ms. Fix is a single-flight
+  lock per (node,dataset) in Controller; the second caller re-checks the
+  catalog inside the lock, which is why that check is not redundant.
+  Regression test confirmed to FAIL without the fix (sent 8 times).
+
+  Also added priority/timeout_ms to run() in both SDKs - the client API had had
+  them since the queue landed and no SDK caller could reach them.
 
 - SDK catch-up (Python + TypeScript): workflow() with `run` resume, recent(),
   stats(), and the NodeSummary fields added since the SDKs were written

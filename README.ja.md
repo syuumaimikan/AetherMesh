@@ -628,6 +628,18 @@ cargo test -p aether-wasm --no-default-features --features wasmtime-backend
 
 ---
 
+### 実際に使う形
+
+例は必要になる順に並べていて、**数字はすべて実測**です。
+
+| | |
+|---|---|
+| [`14-web-service`](examples/14-web-service) | メッシュの前に立てる HTTP API。接続プール、優先度、意味のあるステータスコード。プールだけで 3.4 倍 |
+| [`15-web-dashboard`](examples/15-web-dashboard) | ブラウザ版ダッシュボード（SSE）。ポーリングは 1 本、閲覧者は何人でも |
+| [`16-nightly-pipeline`](examples/16-nightly-pipeline) | 深夜 3 時に落ちたバッチが、朝 9 時に最初からやり直さない |
+| [`17-ci-shards`](examples/17-ci-shards) | スイートをシャードに分けて分散。緊急ジョブの待ち時間が 2.3 分の 1 |
+| [`18-embedded`](examples/18-embedded) | 自分の Rust サービスにメッシュを埋め込む。コントローラのプロセスは不要 |
+
 ## 現状と、正直な限界
 
 **アルファ。ロードマップの項目はすべて実装済み（テスト 365 本）ですが、実運用実績はまだありません。**

@@ -1,0 +1,48 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>AetherMesh · service</title>
+<style>
+  body { font: 15px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; margin: 2rem auto; max-width: 46rem; padding: 0 1rem; }
+  h1 { font-size: 1.1rem; letter-spacing: .04em; }
+  button { font: inherit; padding: .4rem .9rem; cursor: pointer; }
+  pre { background: #0000000d; padding: .8rem; overflow-x: auto; border-radius: 4px; }
+  .row { display: flex; gap: .6rem; align-items: center; flex-wrap: wrap; margin: 1rem 0; }
+  .dim { opacity: .6; }
+</style>
+
+<h1>AetherMesh · service</h1>
+<p class="dim">The page picks the data. The task kinds live on the server.</p>
+
+<div class="row">
+  <input type="file" id="file">
+  <button id="hash">Hash it</button>
+  <button id="work">Run CPU work</button>
+  <button id="health">Health</button>
+</div>
+
+<pre id="out">ready</pre>
+
+<script type="module">
+  const out = document.getElementById("out");
+  const show = (label, body) =>
+    (out.textContent = `${label}\n${JSON.stringify(body, null, 2)}`);
+
+  document.getElementById("hash").onclick = async () => {
+    const file = document.getElementById("file").files[0];
+    if (!file) return show("pick a file first", {});
+    out.textContent = "hashing…";
+    const response = await fetch("/api/hash", { method: "POST", body: file });
+    show(`POST /api/hash → ${response.status}`, await response.json());
+  };
+
+  document.getElementById("work").onclick = async () => {
+    out.textContent = "working…";
+    const response = await fetch("/api/work?iterations=20000000", { method: "POST" });
+    show(`POST /api/work → ${response.status}`, await response.json());
+  };
+
+  document.getElementById("health").onclick = async () => {
+    const response = await fetch("/healthz");
+    show(`GET /healthz → ${response.status}`, await response.json());
+  };
+</script>

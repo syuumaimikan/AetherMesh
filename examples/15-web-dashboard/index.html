@@ -1,0 +1,93 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>AetherMesh · live</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; margin: 1.5rem auto; max-width: 62rem; padding: 0 1rem; }
+  h1 { font-size: 1rem; letter-spacing: .06em; margin: 0 0 1rem; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); gap: .8rem; }
+  .card { border: 1px solid currentColor; border-radius: 5px; padding: .7rem .9rem; opacity: .92; }
+  .card h2 { font-size: .72rem; letter-spacing: .12em; text-transform: uppercase; opacity: .6; margin: 0 0 .5rem; }
+  .n { font-size: 1.5rem; }
+  table { border-collapse: collapse; width: 100%; margin-top: .8rem; }
+  th, td { text-align: left; padding: .22rem .5rem .22rem 0; white-space: nowrap; }
+  th { font-size: .7rem; letter-spacing: .1em; text-transform: uppercase; opacity: .55; font-weight: normal; }
+  td.preview { white-space: pre; overflow: hidden; text-overflow: ellipsis; max-width: 24rem; }
+  .ok { color: #1a7f37; } .bad { color: #cf222e; } .dim { opacity: .55; }
+  #link { float: right; font-size: .8rem; }
+</style>
+
+<h1>AetherMesh <span id="link" class="dim">connecting…</span></h1>
+
+<div class="grid">
+  <div class="card"><h2>Not moved</h2><div class="n" id="saved">—</div><div class="dim" id="skipped"></div></div>
+  <div class="card"><h2>On the wire</h2><div class="n" id="sent">—</div><div class="dim" id="ratio"></div></div>
+  <div class="card"><h2>Nodes</h2><div class="n" id="nodes">—</div><div class="dim" id="queue"></div></div>
+  <div class="card"><h2>Tasks</h2><div class="n" id="tasks">—</div><div class="dim" id="failed"></div></div>
+</div>
+
+<table id="recent">
+  <thead><tr><th></th><th>kind</th><th>ms</th><th>node</th><th>ago</th><th>output</th></tr></thead>
+  <tbody></tbody>
+</table>
+
+<script type="module">
+  const bytes = (n) => {
+    const units = ["B", "KiB", "MiB", "GiB"];
+    let value = Number(n) || 0, unit = 0;
+    while (value >= 1024 && unit < units.length - 1) { value /= 1024; unit += 1; }
+    return `${value.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
+  };
+  const ago = (s) => (s < 60 ? `${s.toFixed(0)}s` : s < 3600 ? `${(s / 60).toFixed(0)}m` : `${(s / 3600).toFixed(0)}h`);
+  const set = (id, text) => (document.getElementById(id).textContent = text);
+
+  const source = new EventSource("/events");
+
+  source.onopen = () => {
+    document.getElementById("link").textContent = "live";
+    document.getElementById("link").className = "ok";
+  };
+  source.onerror = () => {
+    document.getElementById("link").textContent = "lost — retrying";
+    document.getElementById("link").className = "bad";
+  };
+
+  source.onmessage = (event) => {
+    const { stats, nodes, recent, error } = JSON.parse(event.data);
+    if (error) {
+      document.getElementById("link").textContent = `stale — ${error}`;
+      document.getElementById("link").className = "bad";
+    }
+    if (!stats) return;
+
+    set("saved", bytes(stats.traffic.bytes_saved_by_compression));
+    set("skipped", `${stats.traffic.transfers_skipped} transfers skipped · ${stats.traffic.chunks_skipped} chunks`);
+    set("sent", bytes(stats.traffic.bytes_sent));
+    set("ratio", `ratio ${stats.traffic.compression_ratio.toFixed(3)} · ${stats.traffic.retries} retries`);
+    set("nodes", `${stats.nodes_connected}/${stats.nodes}`);
+    set("queue", stats.queue.depth ? `queued ${stats.queue.depth} · oldest ${(stats.queue.longest_wait_ms / 1000).toFixed(1)}s` : "none waiting");
+    set("tasks", stats.mesh.tasks_completed);
+    set("failed", `${stats.mesh.tasks_failed} failed · ${nodes.reduce((sum, n) => sum + n.datasetsHeld, 0)} datasets held`);
+
+    const body = document.querySelector("#recent tbody");
+    body.replaceChildren(...recent.map((task) => {
+      const row = document.createElement("tr");
+      const cell = (text, className) => {
+        const td = document.createElement("td");
+        td.textContent = text;
+        if (className) td.className = className;
+        return td;
+      };
+      row.append(
+        cell(task.success ? "✓" : "✕", task.success ? "ok" : "bad"),
+        cell(task.kind),
+        cell(task.durationMs.toFixed(1)),
+        cell(task.nodeId.slice(0, 8), "dim"),
+        cell(ago(task.secondsAgo), "dim"),
+        // textContent, never innerHTML: the preview comes from a task's output.
+        cell(task.preview, "preview"),
+      );
+      return row;
+    }));
+  };
+</script>

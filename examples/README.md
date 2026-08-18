@@ -3,7 +3,8 @@
 # Examples
 
 Each folder is a thing you can run, in the order a person actually learns this:
-one terminal, then several, then several machines, then a browser.
+one terminal, then several, then several machines, then a browser, then the
+shapes real work actually takes.
 
 | Example | What it shows | Needs |
 |---|---|---|
@@ -20,6 +21,11 @@ one terminal, then several, then several machines, then a browser.
 | [`11-workflow`](11-workflow) | Steps that read each other's output, without moving it | Python 3.10+ |
 | [`12-verify`](12-verify) | Checking this project's claims against your own mesh | Python 3.10+ |
 | [`13-tracing`](13-tracing) | Following one task through the controller with OpenTelemetry | Python 3.10+ |
+| [`14-web-service`](14-web-service) | A deployable HTTP API: connection pool, priorities, status codes | Node 20+ |
+| [`15-web-dashboard`](15-web-dashboard) | The TUI in a browser, over server-sent events | Node 20+ |
+| [`16-nightly-pipeline`](16-nightly-pipeline) | A batch job that resumes instead of starting over | Python 3.10+ |
+| [`17-ci-shards`](17-ci-shards) | Sharding a suite, and letting urgent work jump the queue | Python 3.10+ |
+| [`18-embedded`](18-embedded) | The mesh as a library inside your own Rust service | Rust |
 
 ## The 30-second version
 

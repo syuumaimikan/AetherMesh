@@ -201,6 +201,8 @@ class AetherMesh:
         payload: bytes = b"",
         inputs: list[str] | None = None,
         constraints: list[str] | None = None,
+        priority: str | None = None,
+        timeout_ms: int | None = None,
     ) -> TaskResult:
         """Runs a built-in task: ``echo``, ``hash``, or ``cpu``.
 
@@ -210,8 +212,24 @@ class AetherMesh:
         ``constraints`` restrict which nodes may run this at all, written as
         ``"gpu=true"``, ``"region!=us-east"``, or ``"nvme"`` (label present).
         A task nothing satisfies raises rather than running somewhere wrong.
+
+        ``priority`` decides who waits once more work has arrived than there
+        are nodes: ``"critical"``, ``"high"``, ``"normal"``, ``"low"``,
+        ``"background"``. It changes nothing on an idle mesh — a queue nobody
+        is waiting in has no order worth arguing about.
+
+        ``timeout_ms`` is how long this submission is worth waiting for a node.
+        It is the caller's own deadline and affects nobody else's work.
         """
-        return self._submit(kind, payload, inputs or [], constraints or [], None)
+        return self._submit(
+            kind,
+            payload,
+            inputs or [],
+            constraints or [],
+            None,
+            priority,
+            timeout_ms,
+        )
 
     def run_wasm(
         self,
@@ -219,9 +237,19 @@ class AetherMesh:
         payload: bytes = b"",
         inputs: list[str] | None = None,
         constraints: list[str] | None = None,
+        priority: str | None = None,
+        timeout_ms: int | None = None,
     ) -> TaskResult:
         """Runs a WebAssembly module previously published."""
-        return self._submit("wasm", payload, inputs or [], constraints or [], module_id)
+        return self._submit(
+            "wasm",
+            payload,
+            inputs or [],
+            constraints or [],
+            module_id,
+            priority,
+            timeout_ms,
+        )
 
     def workflow(
         self,
@@ -357,6 +385,8 @@ class AetherMesh:
         inputs: list[str],
         constraints: list[str],
         module: str | None,
+        priority: str | None = None,
+        timeout_ms: int | None = None,
     ) -> TaskResult:
         frame = self._request(
             {
@@ -366,6 +396,8 @@ class AetherMesh:
                 "inputs": inputs,
                 "constraints": constraints,
                 "module": module,
+                "priority": priority,
+                "timeout_ms": timeout_ms,
             }
         )
         self._expect(frame, "result")

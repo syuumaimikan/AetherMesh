@@ -360,6 +360,19 @@ The module is published like any dataset, so a 5 MB module reaches each node onc
 
 ---
 
+### Doing something with it
+
+The examples are in the order people actually need them, and every number in
+them was measured rather than imagined:
+
+| | |
+|---|---|
+| [`14-web-service`](examples/14-web-service) | An HTTP API in front of the mesh — connection pool, priorities, honest status codes. 3.4× throughput from pooling alone |
+| [`15-web-dashboard`](examples/15-web-dashboard) | The dashboard in a browser over server-sent events: one poll, many viewers |
+| [`16-nightly-pipeline`](examples/16-nightly-pipeline) | A batch job that fails at 3am and resumes at 9am instead of starting over |
+| [`17-ci-shards`](examples/17-ci-shards) | Sharding a suite across nodes, and an urgent run waiting 2.3× less than the work it arrived behind |
+| [`18-embedded`](examples/18-embedded) | The mesh as a library inside your own Rust service, with no controller process at all |
+
 ## Project status
 
 **Alpha — everything on the roadmap is implemented, covered by 365 tests, and not yet battle-tested.**

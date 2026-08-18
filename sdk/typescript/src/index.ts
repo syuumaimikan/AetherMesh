@@ -131,6 +131,19 @@ export interface FinishedTask {
   secondsAgo: number;
 }
 
+/**
+ * Who waits once more work has arrived than there are nodes.
+ *
+ * Changes nothing on an idle mesh: a queue nobody is waiting in has no order
+ * worth arguing about.
+ */
+export type Priority =
+  | "critical"
+  | "high"
+  | "normal"
+  | "low"
+  | "background";
+
 /** The controller answered with an error, or the connection failed. */
 export class AetherMeshError extends Error {}
 
@@ -229,8 +242,10 @@ export class AetherMesh {
     payload: Uint8Array = new Uint8Array(),
     inputs: string[] = [],
     constraints: string[] = [],
+    priority?: Priority,
+    timeoutMs?: number,
   ): Promise<TaskResult> {
-    return this.#submit({ kind, payload, inputs, constraints });
+    return this.#submit({ kind, payload, inputs, constraints, priority, timeoutMs });
   }
 
   /** Runs a WebAssembly module previously published with {@link publish}. */
@@ -239,6 +254,8 @@ export class AetherMesh {
     payload: Uint8Array = new Uint8Array(),
     inputs: string[] = [],
     constraints: string[] = [],
+    priority?: Priority,
+    timeoutMs?: number,
   ): Promise<TaskResult> {
     return this.#submit({
       kind: "wasm",
@@ -246,6 +263,8 @@ export class AetherMesh {
       inputs,
       constraints,
       module: moduleId,
+      priority,
+      timeoutMs,
     });
   }
 
@@ -367,6 +386,8 @@ export class AetherMesh {
     inputs: string[];
     constraints: string[];
     module?: string;
+    priority?: Priority;
+    timeoutMs?: number;
   }): Promise<TaskResult> {
     const frame = await this.#request({
       type: "submit",
@@ -375,6 +396,8 @@ export class AetherMesh {
       inputs: task.inputs,
       constraints: task.constraints,
       module: task.module ?? null,
+      priority: task.priority ?? null,
+      timeout_ms: task.timeoutMs ?? null,
     });
     this.#expect(frame, "result");
 
