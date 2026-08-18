@@ -198,6 +198,69 @@ async fn a_hash_task_runs_on_the_agent_and_comes_back() {
 }
 
 #[tokio::test]
+async fn one_node_runs_several_tasks_at_once() {
+    let harness = Harness::start().await;
+    let info = NodeInfo::new(NodeId::generate(), "many-cores", "127.0.0.1:7001", 8);
+    let node_id = info.id;
+    let mut client = AgentClient::connect(harness.addr, info)
+        .await
+        .unwrap()
+        .with_max_concurrent_tasks(8);
+    tokio::spawn(async move {
+        let _ = client
+            .run(MetricsCollector::new(), Duration::from_secs(60))
+            .await;
+    });
+    harness
+        .wait_until(|registry| registry.contains(node_id))
+        .await;
+
+    let controller = std::sync::Arc::new(harness.controller());
+    let payload = 20_000_000u64.to_le_bytes().to_vec();
+
+    // One task first, to know what one costs on this machine.
+    let started = std::time::Instant::now();
+    controller
+        .submit(Task::new(kind::CPU, payload.clone()))
+        .await
+        .unwrap();
+    let alone = started.elapsed();
+
+    let started = std::time::Instant::now();
+    let mut running = tokio::task::JoinSet::new();
+    for _ in 0..8 {
+        let controller = controller.clone();
+        let payload = payload.clone();
+        running.spawn(async move { controller.submit(Task::new(kind::CPU, payload)).await });
+    }
+    while let Some(finished) = running.join_next().await {
+        assert!(finished.unwrap().unwrap().is_success());
+    }
+    let together = started.elapsed();
+
+    // Eight of them, on a node that agreed to run eight at once. Serially
+    // that is eight times `alone`; four is a wide margin that still fails if
+    // the agent went back to awaiting each task before reading the next.
+    assert!(
+        together < alone * 4,
+        "eight tasks took {together:?} when one takes {alone:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_node_can_be_told_to_run_one_task_at_a_time() {
+    let harness = Harness::start().await;
+    let info = NodeInfo::new(NodeId::generate(), "busy-elsewhere", "127.0.0.1:7001", 8);
+    let client = AgentClient::connect(harness.addr, info)
+        .await
+        .unwrap()
+        .with_max_concurrent_tasks(1);
+
+    // A machine doing something else with its cores should be able to say so.
+    assert_eq!(client.max_concurrent_tasks(), 1);
+}
+
+#[tokio::test]
 async fn a_cpu_task_returns_a_deterministic_result() {
     let harness = Harness::start().await;
     harness.attach_agent("worker").await;

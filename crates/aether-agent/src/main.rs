@@ -60,6 +60,10 @@ struct Args {
     /// least recently used. Unset means no limit.
     #[arg(long, value_name = "MB")]
     storage_budget_mb: Option<u64>,
+
+    /// Tasks to run at once. Unset means one per logical CPU.
+    #[arg(long)]
+    max_concurrent_tasks: Option<usize>,
 }
 
 #[tokio::main]
@@ -98,6 +102,9 @@ async fn main() -> anyhow::Result<()> {
     config.labels.extend(args.labels);
     if let Some(megabytes) = args.storage_budget_mb {
         config.storage_budget_bytes = Some(megabytes.saturating_mul(1024 * 1024));
+    }
+    if args.max_concurrent_tasks.is_some() {
+        config.max_concurrent_tasks = args.max_concurrent_tasks;
     }
 
     // A restarted agent keeps its identity, so the controller sees one node.
@@ -143,6 +150,9 @@ async fn main() -> anyhow::Result<()> {
             if let Some(budget) = config.storage_budget_bytes {
                 client = client.with_storage_budget(budget);
             }
+            if let Some(tasks) = config.max_concurrent_tasks {
+                client = client.with_max_concurrent_tasks(tasks);
+            }
             client.run(MetricsCollector::new(), heartbeat).await?;
         }
         #[cfg(not(feature = "tls"))]
@@ -156,6 +166,9 @@ async fn main() -> anyhow::Result<()> {
             .await?;
             if let Some(budget) = config.storage_budget_bytes {
                 client = client.with_storage_budget(budget);
+            }
+            if let Some(tasks) = config.max_concurrent_tasks {
+                client = client.with_max_concurrent_tasks(tasks);
             }
 
             // Extra connections are opened before the run loop starts, so the

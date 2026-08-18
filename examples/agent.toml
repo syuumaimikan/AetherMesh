@@ -45,3 +45,8 @@ storage_budget_bytes = 268435456
 # Extra connections to offer for bulk data. Chunks are spread across them,
 # which helps when one TCP stream cannot fill the link.
 data_channels = 2
+
+# How many tasks this node runs at once. Unset means one per logical CPU.
+# Lower it on a machine that is doing something else with its cores: a node
+# that agreed to more work than it can do is worse than one that said no.
+# max_concurrent_tasks = 4

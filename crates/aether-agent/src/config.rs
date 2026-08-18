@@ -31,6 +31,12 @@ pub struct AgentConfig {
     /// Tasks constrain against these, so declaring `gpu=true` on a box without
     /// a GPU is how you get GPU work scheduled onto a machine that cannot do it.
     pub labels: Vec<String>,
+    /// How many tasks this node runs at once. `None` uses one per logical CPU.
+    ///
+    /// Lower it on a machine that is doing something else with its cores; a
+    /// node that agreed to more work than it can do is worse than one that
+    /// said no.
+    pub max_concurrent_tasks: Option<usize>,
     /// Most bytes of received data this node will hold at once.
     ///
     /// `None` means no limit, which is fine on a workstation and not on a
@@ -58,6 +64,7 @@ impl Default for AgentConfig {
             tls_client_cert_path: None,
             tls_client_key_path: None,
             labels: Vec::new(),
+            max_concurrent_tasks: None,
             storage_budget_bytes: None,
             bandwidth_bytes_per_sec: None,
             data_channels: 0,

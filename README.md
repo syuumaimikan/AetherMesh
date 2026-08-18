@@ -179,6 +179,15 @@ Both are fixed, and both were needed. On four agents, 64 CPU-bound tasks:
 
 3.8× of a theoretical 4.0×. Fixing only the dispatch gave 1.0× — the placement was still sending everything to one machine.
 
+A node also used one core at a time, because its read loop awaited each task before reading the next message. One agent, 16 cores, 32 CPU-bound tasks:
+
+| `--max-concurrent-tasks` | cores used | throughput |
+|---|---:|---:|
+| 1 | 1.0 | 165 tasks/s |
+| default (one per core) | **9.2** | **1,484 tasks/s** |
+
+Nine of sixteen rather than sixteen, because the client and controller are competing for the same cores on this measurement. `1` is still selectable: a machine doing something else with its cores should be able to say so.
+
 The number in flight is bounded rather than unlimited: every task out holds a reply channel and whatever its inputs cost to send, so a client submitting ten thousand at once queues instead of exhausting the controller.
 
 ### Failures are ordinary

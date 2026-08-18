@@ -55,6 +55,13 @@ pub struct AgentClient<S = OwnedReadHalf> {
     /// Counts messages that represent real work, so the heartbeat task can tell
     /// an idle node from a working one without inspecting what it did.
     activity: Arc<AtomicU64>,
+    /// How many tasks this node will run at once.
+    ///
+    /// Without this the read loop awaited each task before reading the next
+    /// message, so a sixteen-core machine ran one task at a time. The limit is
+    /// backpressure rather than a queue: at capacity the agent stops reading
+    /// assignments, which is how a node says "not yet" to a controller.
+    task_permits: Arc<tokio::sync::Semaphore>,
 }
 
 impl AgentClient<OwnedReadHalf> {
@@ -91,6 +98,43 @@ impl<S> AgentClient<S> {
     pub fn storage_budget(&self) -> Option<u64> {
         self.store.budget()
     }
+
+    /// Sets how many tasks this node runs at once.
+    ///
+    /// Defaults to the number of logical CPUs. One is the old behaviour and
+    /// is worth having: a node doing something else with its cores should be
+    /// able to say so.
+    pub fn with_max_concurrent_tasks(mut self, tasks: usize) -> Self {
+        self.task_permits = Arc::new(tokio::sync::Semaphore::new(tasks.max(1)));
+        self
+    }
+
+    /// How many tasks this node will run at once.
+    pub fn max_concurrent_tasks(&self) -> usize {
+        self.task_permits.available_permits() + self.running_tasks()
+    }
+
+    /// Tasks running on this node right now.
+    pub fn running_tasks(&self) -> usize {
+        RUNNING.load(Ordering::Relaxed) as usize
+    }
+}
+
+/// Tasks executing across every client in this process.
+///
+/// One counter rather than one per client: an agent has a single client, and
+/// a test with several is measuring the same machine's cores either way.
+static RUNNING: AtomicU64 = AtomicU64::new(0);
+
+/// One task per logical CPU.
+///
+/// A task is a whole CPU's worth of work by construction — the built-ins are
+/// compute and the WASM ones have a fuel budget — so oversubscribing buys
+/// nothing but context switches.
+fn default_task_concurrency() -> usize {
+    std::thread::available_parallelism()
+        .map(|count| count.get())
+        .unwrap_or(1)
 }
 
 impl<S> AgentClient<S>
@@ -148,6 +192,7 @@ where
             channel_token,
             heartbeat_timeout,
             activity: Arc::new(AtomicU64::new(0)),
+            task_permits: Arc::new(tokio::sync::Semaphore::new(default_task_concurrency())),
         })
     }
 
@@ -258,17 +303,43 @@ where
                 .map_err(|_| ClientError::Disconnected),
             Message::TaskAssignment { node_id, task } => {
                 debug!(%task.kind, task_id = %task.id, "task received");
-                let store = self.store.clone();
-                let result =
-                    tokio::task::spawn_blocking(move || executor::execute(node_id, &task, &store))
-                        .await
-                        .map_err(|error| {
-                            std::io::Error::other(format!("task thread failed: {error}"))
-                        })?;
 
-                self.outbound
-                    .send(Message::TaskCompleted { result })
-                    .map_err(|_| ClientError::Disconnected)
+                // Waits only when this node is already running as many tasks
+                // as it agreed to. Not reading the next assignment is how a
+                // saturated node declines more work; nothing already running
+                // is waiting on a message, so this cannot deadlock.
+                let permit = self
+                    .task_permits
+                    .clone()
+                    .acquire_owned()
+                    .await
+                    .map_err(|_| ClientError::Disconnected)?;
+
+                let store = self.store.clone();
+                let outbound = self.outbound.clone();
+                let task_id = task.id;
+
+                // Spawned rather than awaited: awaiting it here is what made a
+                // sixteen-core machine run one task at a time.
+                tokio::spawn(async move {
+                    RUNNING.fetch_add(1, Ordering::Relaxed);
+                    let outcome = tokio::task::spawn_blocking(move || {
+                        executor::execute(node_id, &task, &store)
+                    })
+                    .await;
+                    RUNNING.fetch_sub(1, Ordering::Relaxed);
+                    drop(permit);
+
+                    match outcome {
+                        Ok(result) => {
+                            let _ = outbound.send(Message::TaskCompleted { result });
+                        }
+                        // The blocking pool panicked or was shut down. The
+                        // controller times the task out and places it again.
+                        Err(error) => warn!(%error, %task_id, "task thread failed"),
+                    }
+                });
+                Ok(())
             }
             other => {
                 warn!(kind = other.kind(), "unexpected message from controller");

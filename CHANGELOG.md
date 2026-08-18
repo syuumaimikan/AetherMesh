@@ -21,6 +21,13 @@ from 0.1.0 onward. Until then, `main` is the release.
   Dispatch was strictly first-come, first-served before this — and, since one
   task is dispatched at a time, a long backlog meant urgent work waited behind
   all of it.
+- **A node uses more than one of its cores.** The agent's read loop awaited
+  each task before reading the next message, so a sixteen-core machine ran one
+  task at a time. Tasks are now executed concurrently up to
+  `--max-concurrent-tasks`, defaulting to one per logical CPU, with the
+  semaphore acting as backpressure: a saturated node stops reading assignments
+  rather than accepting work it cannot do. Measured on one 16-core agent:
+  1.0 cores and 165 tasks/s before, 9.2 cores and 1,484 tasks/s after.
 - **Independent workflow steps run at the same time.** A workflow's wall clock
   was the sum of its steps even when its branches had nothing to do with each
   other. Whether those branches land on different machines is now a real
