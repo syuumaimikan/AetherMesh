@@ -1,11 +1,11 @@
 phase=hardening-and-sdk-parity
 status=complete
-next=A4-quic (see note), A20-A23
+next=real hardware (blocks the rest), then A20-A23; A4 QUIC deliberately deferred
 
 # Working notes for whoever picks this up next. Not documentation — the READMEs
 # and docs/ are. This is the stuff that would otherwise have to be rediscovered.
 
-test counts: 479 default / 534 with tls + cloud-http + otel (both crates)
+test counts: 483 default / 538 with tls + cloud-http + otel (both crates)
 
 ## Advanced phases
 
@@ -93,6 +93,30 @@ completed:
   locality=1.0 -> 1 node, 36 ms, 1.0x. locality=0.0 -> 4 nodes, 13 ms, 2.7x.
   In A9 that same comparison showed no difference at all, because there was
   never a second task in flight. Docs corrected in three places.
+
+- load tests + CI gaps: crates/aether-agent/tests/stress.rs. 100 tasks/1 dataset,
+  1000 tasks all distinct, 20 datasets racing 3 nodes. Suite run 5x and the
+  load tests 8x: no flakes.
+
+  WORTH REMEMBERING: the first version asserted BYTES ("no more than one copy
+  per node") and PASSED against the broken code - a duplicated transfer to a
+  node that already holds every chunk sends nothing, so chunk dedup hides the
+  race. Counting transfer ATTEMPTS catches it (4 for 3 nodes). Verified by
+  disabling the fix. An assertion that cannot fail is not a test.
+
+  CI now also builds the otel feature (nothing did), the Java CheckAll example,
+  and the .NET examples.
+
+  DELIBERATELY NOT DONE, and why:
+  - A4 QUIC. It needs a real network to justify or tune, and nobody has run
+    this on one. Adding an unmeasurable transport works against "as few bugs
+    as possible", which was the ask alongside "finish everything".
+  - A20-A23 multi-controller/HA. Designing failover for a system nobody has
+    run on three machines is the over-design the master prompt warns about.
+    The reconnect+DataHeld work already covers the common case (restart the
+    controller, keep the mesh).
+  - Real hardware, real accounts, external security review: not possible from
+    this machine, and no amount of further work here changes that.
 
 - panic hardening + SDK parity for go/java/dotnet:
 

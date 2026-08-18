@@ -756,20 +756,32 @@ Built and tested:
 | **Data movement** | BLAKE3 content addressing, chunk-level dedup, adaptive LZ4, transfer across several connections |
 | **Caching** | Bounded LRU store on each agent with eviction reported to the controller; result cache keyed by work identity |
 | **Isolation** | WebAssembly on wasmi or wasmtime, fuel and memory limits, capabilities off by default |
-| **Failure** | Heartbeat eviction, retry onto another node, dead sockets skipped at selection |
+| **Scheduling under load** | Five priority levels with ageing, bounded queues with a choice of what gives way, per-task deadlines |
+| **Work that has steps** | Workflow DAGs whose intermediate results never move, and named runs that resume instead of restarting |
+| **Failure** | Heartbeat eviction, retry onto another node, dead sockets skipped at selection, agents that outlive their controller and re-announce what they hold |
 | **Security** | TLS and mutual TLS on both listeners, shared and per-node tokens, per-registration data-channel tokens, constant-time comparison |
-| **Operating it** | TOML config, structured logs, Prometheus `/metrics`, a terminal dashboard, idle heartbeat backoff, small binaries |
+| **Operating it** | TOML config, structured logs, Prometheus `/metrics`, a terminal dashboard, recent-task history, idle heartbeat backoff, small binaries |
+| **Seeing inside it** | OpenTelemetry spans that follow one task from the client API onto the node that ran it |
+| **Capacity** | An autoscaler that recommends a node count from the queue and starts nothing itself |
 | **Reaching it** | JSON client API with TypeScript, Python, Go, Java, and C# SDKs, plus a `concurrent.futures` pool for Python |
 | **Provisioning** | Kubernetes, AWS EC2, GCP Compute, Azure VMs, local processes |
 
 What comes next, and where help is most welcome:
 
-- [ ] **Running any of this on real hardware over a real network.** This is the weakest claim in the repository — every number here comes from loopback.
+- [ ] **Running any of this on real hardware over a real network.** This is the
+      weakest claim in the repository — every number here comes from loopback,
+      and no amount of further work on this machine can change that.
 - [ ] Running the cloud adapters against real accounts and fixing what that teaches
 - [ ] A security review of the sandbox and the credential paths by someone who did not write them
-- [ ] Task priorities and queueing; placement is first-come, first-served today
-- [ ] QUIC transport — the framing layer is already transport-independent
+- [ ] More than one controller: today it is a single process, and losing it
+      costs you the catalog until the agents re-announce
+- [ ] QUIC transport — the framing layer is already transport-independent, but
+      the case for it is a real network, which nobody has measured this on yet
 - [ ] Scheduling across regions with cost as a term in the score
+
+The first item gates the fifth. Adding a transport to make a network faster,
+having never measured the network, is how you end up with a carefully tuned
+answer to a question nobody asked.
 
 ---
 
