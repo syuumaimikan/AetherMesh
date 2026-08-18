@@ -24,6 +24,8 @@ from types import TracebackType
 __all__ = [
     "AetherMesh",
     "AetherMeshError",
+    "MeshExecutor",
+    "MeshTask",
     "NodeSummary",
     "Published",
     "TaskResult",
@@ -234,3 +236,7 @@ class AetherMesh:
         taken = bytes(self._buffer[:count])
         del self._buffer[:count]
         return taken
+
+# Imported last: executor.py needs the names above, so this has to run after
+# they exist rather than at the top of the file.
+from .executor import MeshExecutor, MeshTask  # noqa: E402

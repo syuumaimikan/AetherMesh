@@ -15,6 +15,8 @@ one terminal, then several, then several machines, then a browser.
 | [`06-python-pipeline`](06-python-pipeline) | Publish once, run many tasks over the same data | Python 3.10+ |
 | [`07-wasm-task`](07-wasm-task) | A task written in another language, run sandboxed | Rust |
 | [`08-secure-mesh`](08-secure-mesh) | TLS, tokens, and mutual TLS end to end | Rust |
+| [`09-labeled-nodes`](09-labeled-nodes) | Sending work only to machines that qualify | Python 3.10+ |
+| [`10-executor`](10-executor) | Swapping a Python thread pool for the mesh | Python 3.10+ |
 
 ## The 30-second version
 
