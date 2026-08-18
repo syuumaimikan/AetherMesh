@@ -121,13 +121,15 @@ put it behind whatever already fronts your other metrics endpoints.
 
 ## Dependency audit
 
-`cargo audit` runs clean. Two crates carry unmaintained advisories and are
-accepted for now, with reasons:
+`cargo audit` runs clean. One crate carries an unmaintained advisory and is
+accepted for now, with a reason:
 
 | Crate | Why it stays |
 |---|---|
 | `bincode` | The agent wire format. Replacing it is a protocol break; no known vulnerability, only a maintenance warning. |
-| `rustls-pemfile` | PEM parsing for TLS setup. `rustls` has since absorbed this; migrating is a small, planned change. |
+
+`rustls-pemfile` used to be on this list. It is gone: `rustls-pki-types` now
+parses PEM itself, so the dependency was dropped rather than explained away.
 
 ## Reporting something
 

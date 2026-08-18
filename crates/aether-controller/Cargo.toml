@@ -14,7 +14,7 @@ description = "AetherMesh control plane: node registry, dispatch, data catalog, 
 [features]
 default = []
 # TLS for agent connections, plus self-signed certificate generation.
-tls = ["dep:tokio-rustls", "dep:rustls-pemfile", "dep:rcgen"]
+tls = ["dep:tokio-rustls", "dep:rcgen"]
 
 [dependencies]
 aether-core.workspace = true
@@ -29,7 +29,6 @@ rcgen = { version = "0.14", default-features = false, features = [
     # Needed to sign a client certificate with an existing CA.
     "x509-parser",
 ], optional = true }
-rustls-pemfile = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true

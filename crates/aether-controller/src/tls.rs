@@ -12,6 +12,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
+use tokio_rustls::rustls::pki_types::pem::PemObject;
 use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use tokio_rustls::rustls::server::WebPkiClientVerifier;
 use tokio_rustls::rustls::{self, ServerConfig};
@@ -60,6 +61,12 @@ pub enum TlsError {
         #[source]
         source: io::Error,
     },
+    #[error("{path} is not valid PEM: {source}")]
+    Pem {
+        path: PathBuf,
+        #[source]
+        source: rustls::pki_types::pem::Error,
+    },
     #[error("{0} contains no certificates")]
     NoCertificates(PathBuf),
     #[error("{0} contains no private key")]
@@ -81,9 +88,9 @@ fn read(path: &Path) -> Result<Vec<u8>, TlsError> {
 
 /// Reads a PEM file's certificates.
 fn certificates(path: &Path) -> Result<Vec<CertificateDer<'static>>, TlsError> {
-    let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut read(path)?.as_slice())
+    let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_slice_iter(&read(path)?)
         .collect::<Result<_, _>>()
-        .map_err(|source| TlsError::Io {
+        .map_err(|source| TlsError::Pem {
             path: path.to_path_buf(),
             source,
         })?;
@@ -101,13 +108,19 @@ fn certificates(path: &Path) -> Result<Vec<CertificateDer<'static>>, TlsError> {
 pub fn acceptor(config: &TlsConfig) -> Result<TlsAcceptor, TlsError> {
     let certs = certificates(&config.cert_path)?;
 
-    let key: PrivateKeyDer<'static> =
-        rustls_pemfile::private_key(&mut read(&config.key_path)?.as_slice())
-            .map_err(|source| TlsError::Io {
+    let key = PrivateKeyDer::from_pem_slice(&read(&config.key_path)?).map_err(|source| {
+        match source {
+            // "no key here" deserves its own message; anything else is the file
+            // being malformed rather than empty.
+            rustls::pki_types::pem::Error::NoItemsFound => {
+                TlsError::NoPrivateKey(config.key_path.clone())
+            }
+            source => TlsError::Pem {
                 path: config.key_path.clone(),
                 source,
-            })?
-            .ok_or_else(|| TlsError::NoPrivateKey(config.key_path.clone()))?;
+            },
+        }
+    })?;
 
     let builder = match &config.client_ca_path {
         Some(client_ca_path) => {

@@ -12,7 +12,8 @@ use std::sync::Arc;
 use aether_core::NodeInfo;
 use tokio::io::ReadHalf;
 use tokio::net::TcpStream;
-use tokio_rustls::rustls::pki_types::{CertificateDer, ServerName};
+use tokio_rustls::rustls::pki_types::pem::PemObject;
+use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
 use tokio_rustls::rustls::{self, ClientConfig, RootCertStore};
 use tokio_rustls::{TlsConnector, client::TlsStream};
 
@@ -26,6 +27,12 @@ pub enum TlsClientError {
         path: PathBuf,
         #[source]
         source: io::Error,
+    },
+    #[error("{path} is not valid PEM: {source}")]
+    Pem {
+        path: PathBuf,
+        #[source]
+        source: rustls::pki_types::pem::Error,
     },
     #[error("{0} contains no certificates")]
     NoCertificates(PathBuf),
@@ -48,9 +55,9 @@ fn certificates(path: &Path) -> Result<Vec<CertificateDer<'static>>, TlsClientEr
         source,
     })?;
 
-    let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut pem.as_slice())
+    let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_slice_iter(&pem)
         .collect::<Result<_, _>>()
-        .map_err(|source| TlsClientError::Io {
+        .map_err(|source| TlsClientError::Pem {
             path: path.to_path_buf(),
             source,
         })?;
@@ -92,12 +99,17 @@ fn build_connector(
                 path: key_path.to_path_buf(),
                 source,
             })?;
-            let key = rustls_pemfile::private_key(&mut key_pem.as_slice())
-                .map_err(|source| TlsClientError::Io {
+            let key = PrivateKeyDer::from_pem_slice(&key_pem).map_err(|source| match source {
+                // "no key here" deserves its own message; anything else is the
+                // file being malformed rather than empty.
+                rustls::pki_types::pem::Error::NoItemsFound => {
+                    TlsClientError::NoPrivateKey(key_path.to_path_buf())
+                }
+                source => TlsClientError::Pem {
                     path: key_path.to_path_buf(),
                     source,
-                })?
-                .ok_or_else(|| TlsClientError::NoPrivateKey(key_path.to_path_buf()))?;
+                },
+            })?;
 
             builder.with_client_auth_cert(certs, key)?
         }

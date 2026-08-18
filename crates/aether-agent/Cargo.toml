@@ -14,7 +14,7 @@ description = "AetherMesh worker node: registers with a controller, reports metr
 [features]
 default = ["wasm"]
 # TLS for the control connection.
-tls = ["dep:tokio-rustls", "dep:rustls-pemfile"]
+tls = ["dep:tokio-rustls"]
 # WebAssembly tasks, so work written in other languages can run here.
 wasm = ["dep:aether-wasm", "aether-wasm/wasmi-backend"]
 # Same, on the Cranelift JIT instead of the interpreter.
@@ -27,7 +27,6 @@ aether-wasm = { workspace = true, optional = true }
 anyhow.workspace = true
 blake3.workspace = true
 clap = { workspace = true, features = ["derive", "env"] }
-rustls-pemfile = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"] }
 sysinfo = { version = "0.36.1", default-features = false, features = ["system"] }
 thiserror.workspace = true
