@@ -207,7 +207,10 @@ async fn main() -> anyhow::Result<()> {
             AdvancedScheduler::new(state.catalog.clone()),
             NetworkTransport::new(state.connections.clone()),
             state.catalog.clone(),
-        );
+        )
+        // Without this the client API and /metrics report zeroes: the counters
+        // would live on a Controller that only the dispatcher task can see.
+        .with_traffic_stats(state.traffic.clone());
         if let Some(cache) = config.result_cache() {
             info!(
                 entries = config.result_cache_entries,

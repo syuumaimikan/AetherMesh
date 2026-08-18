@@ -135,14 +135,41 @@ fn metrics_body(state: &MeshState) -> String {
         )
     };
 
+    let (datasets, dataset_bytes) = state.catalog.totals();
     let gauges = [
         ("aethermesh_nodes", nodes.len() as f64),
         ("aethermesh_nodes_connected", connected as f64),
         ("aethermesh_cpu_usage_mean", f64::from(cpu)),
         ("aethermesh_memory_usage_mean", f64::from(memory)),
+        ("aethermesh_datasets", datasets as f64),
+        ("aethermesh_dataset_bytes", dataset_bytes as f64),
+    ];
+
+    // Traffic is what the project claims to improve, so it belongs on the
+    // endpoint an operator actually watches.
+    let traffic = state.traffic.snapshot();
+    let counters = [
+        ("aethermesh_data_bytes_sent_total", traffic.data_bytes_sent),
+        (
+            "aethermesh_data_bytes_uncompressed_total",
+            traffic.data_bytes_uncompressed,
+        ),
+        (
+            "aethermesh_transfers_skipped_total",
+            traffic.transfers_skipped,
+        ),
+        ("aethermesh_chunks_skipped_total", traffic.chunks_skipped),
+        ("aethermesh_task_retries_total", traffic.retries),
     ];
 
     let mut body = state.metrics.snapshot().to_prometheus();
+    for (name, value) in counters {
+        body.push_str(&format!(
+            "
+# TYPE {name} counter
+{name} {value}"
+        ));
+    }
     for (name, value) in gauges {
         body.push_str(&format!("\n# TYPE {name} gauge\n{name} {value}"));
     }
@@ -207,6 +234,22 @@ mod tests {
         assert!(body.contains("# TYPE aethermesh_nodes gauge"));
         assert!(body.contains("aethermesh_cpu_usage_mean 0.5"));
         assert!(body.ends_with('\n'), "exposition format is line-oriented");
+    }
+
+    #[test]
+    fn traffic_reaches_the_scrape_endpoint() {
+        let state = state_with_a_busy_node();
+        state.traffic.record_sent(300, 1000);
+        state.traffic.record_transfer_skipped();
+
+        let body = metrics_body(&state);
+
+        // These are the numbers the project exists to improve; an operator
+        // watching a dashboard should not have to open a client connection.
+        assert!(body.contains("aethermesh_data_bytes_sent_total 300"));
+        assert!(body.contains("aethermesh_data_bytes_uncompressed_total 1000"));
+        assert!(body.contains("aethermesh_transfers_skipped_total 1"));
+        assert!(body.contains("# TYPE aethermesh_task_retries_total counter"));
     }
 
     #[test]

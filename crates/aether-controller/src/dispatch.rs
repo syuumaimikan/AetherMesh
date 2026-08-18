@@ -159,13 +159,12 @@ pub struct Controller<S, T> {
     /// Only useful for baseline measurements.
     reuse_data: bool,
     retry: RetryPolicy,
-    retries: u64,
     /// Results of finished work, when the operator turned caching on.
     cache: Option<crate::cache::ResultCache>,
-    data_bytes_sent: u64,
-    data_bytes_uncompressed: u64,
-    transfers_skipped: u64,
-    chunks_skipped: u64,
+    /// Bytes moved and bytes saved. Shared rather than private so the client
+    /// API and the scrape endpoint can read them; this task owns the
+    /// `Controller` exclusively, and these numbers are the point of the project.
+    traffic: crate::observability::TrafficStats,
 }
 
 // `Send` is required because the transport batches chunk sends, and a batched
@@ -184,12 +183,8 @@ impl<S: Scheduler, T: TaskTransport + Send> Controller<S, T> {
             compression: CompressionPolicy::default(),
             reuse_data: true,
             retry: RetryPolicy::default(),
-            retries: 0,
             cache: None,
-            data_bytes_sent: 0,
-            data_bytes_uncompressed: 0,
-            transfers_skipped: 0,
-            chunks_skipped: 0,
+            traffic: crate::observability::TrafficStats::new(),
         }
     }
 
@@ -204,6 +199,20 @@ impl<S: Scheduler, T: TaskTransport + Send> Controller<S, T> {
     pub fn with_data_reuse(mut self, reuse_data: bool) -> Self {
         self.reuse_data = reuse_data;
         self
+    }
+
+    /// Reports traffic into these shared counters instead of its own.
+    ///
+    /// Pass `MeshState::traffic` and the client API sees the same numbers this
+    /// controller is producing.
+    pub fn with_traffic_stats(mut self, traffic: crate::observability::TrafficStats) -> Self {
+        self.traffic = traffic;
+        self
+    }
+
+    /// Everything moved and everything saved, so far.
+    pub fn traffic(&self) -> crate::observability::TrafficSnapshot {
+        self.traffic.snapshot()
     }
 
     /// Sets how a task is retried when a node cannot take it.
@@ -229,7 +238,7 @@ impl<S: Scheduler, T: TaskTransport + Send> Controller<S, T> {
 
     /// Tasks re-dispatched after a delivery failure.
     pub fn retries(&self) -> u64 {
-        self.retries
+        self.traffic.snapshot().retries
     }
 
     /// Sets the chunk size used for datasets larger than one chunk.
@@ -273,22 +282,22 @@ impl<S: Scheduler, T: TaskTransport + Send> Controller<S, T> {
 
     /// Bytes actually put on the wire for task inputs, after compression.
     pub fn data_bytes_sent(&self) -> u64 {
-        self.data_bytes_sent
+        self.traffic.snapshot().data_bytes_sent
     }
 
     /// What those transfers would have cost uncompressed.
     pub fn data_bytes_uncompressed(&self) -> u64 {
-        self.data_bytes_uncompressed
+        self.traffic.snapshot().data_bytes_uncompressed
     }
 
     /// Transfers avoided because the node already held the data.
     pub fn transfers_skipped(&self) -> u64 {
-        self.transfers_skipped
+        self.traffic.snapshot().transfers_skipped
     }
 
     /// Chunks avoided because the node already held that exact chunk.
     pub fn chunks_skipped(&self) -> u64 {
-        self.chunks_skipped
+        self.traffic.snapshot().chunks_skipped
     }
 
     /// Chunk layout of a published dataset, if it is large enough to be split.
@@ -354,7 +363,7 @@ impl<S: Scheduler, T: TaskTransport + Send> Controller<S, T> {
                     // The data this node was credited with is no longer usable.
                     self.catalog.forget_node(node_id);
                     unusable.insert(node_id);
-                    self.retries += 1;
+                    self.traffic.record_retry();
                     if !self.retry.backoff.is_zero() {
                         tokio::time::sleep(self.retry.backoff).await;
                     }
@@ -380,7 +389,7 @@ impl<S: Scheduler, T: TaskTransport + Send> Controller<S, T> {
     async fn ensure_inputs(&mut self, node_id: NodeId, task: &Task) -> Result<(), DispatchError> {
         for data_id in &task.inputs {
             if self.reuse_data && self.catalog.holds(*data_id, node_id) {
-                self.transfers_skipped += 1;
+                self.traffic.record_transfer_skipped();
                 debug!(%node_id, %data_id, "input already on the node");
                 continue;
             }
@@ -402,8 +411,8 @@ impl<S: Scheduler, T: TaskTransport + Send> Controller<S, T> {
                     self.transport
                         .send_data(node_id, descriptor, codec, &payload)
                         .await?;
-                    self.data_bytes_sent += payload.len() as u64;
-                    self.data_bytes_uncompressed += descriptor.size_bytes;
+                    self.traffic
+                        .record_sent(payload.len() as u64, descriptor.size_bytes);
                 }
             }
 
@@ -436,7 +445,7 @@ impl<S: Scheduler, T: TaskTransport + Send> Controller<S, T> {
             // Chunks are content-addressed, so a repeated chunk - inside this
             // dataset or shared with another - is never sent to a node twice.
             if self.reuse_data && self.catalog.holds(chunk.id, node_id) {
-                self.chunks_skipped += 1;
+                self.traffic.record_chunk_skipped();
                 continue;
             }
 
@@ -448,8 +457,8 @@ impl<S: Scheduler, T: TaskTransport + Send> Controller<S, T> {
             let (codec, payload) = self.compression.encode(&bytes[range], bandwidth);
 
             self.catalog.record(chunk, node_id);
-            self.data_bytes_sent += payload.len() as u64;
-            self.data_bytes_uncompressed += chunk.size_bytes;
+            self.traffic
+                .record_sent(payload.len() as u64, chunk.size_bytes);
             batch.push((index, codec, payload));
         }
 

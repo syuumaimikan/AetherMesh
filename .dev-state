@@ -1,7 +1,23 @@
+phase=advanced-A15
+status=complete
+next=A16-tui
+
 # Working notes for whoever picks this up next. Not documentation — the READMEs
 # and docs/ are. This is the stuff that would otherwise have to be rediscovered.
 
-test counts: 270 default / 323 with tls + cloud-http
+test counts: 281 default / 334 with tls + cloud-http
+
+## Advanced phases
+
+completed:
+- A15 Observability API: TrafficStats shared out of the dispatcher task,
+  ClientRequest::Stats, NodeSummary enriched, same numbers on /metrics
+
+next: A16 TUI (ratatui) consuming ClientRequest::Stats + Nodes, then packaging
+
+not started: A1 real-network bench, A2/A3 priority queue (no queue exists at
+all — submit dispatches immediately), A4 QUIC, A6 cost, A7 spot, A8/A9 DAG,
+A10/A11 autoscale, A12/A13 checkpoint, A14 OTel, A17-A23, A24-A26 bench
 
 ## Verified by actually running it, not just by tests
 
@@ -39,6 +55,12 @@ test counts: 270 default / 323 with tls + cloud-http
   by anything the agent chooses; an agent told nothing does not back off at all
 - MeshExecutor refuses Python callables rather than running them locally
 - cloud adapters read platform liveness only; utilisation comes from heartbeats
+
+## Follow-ups deferred on purpose
+
+- the 5 SDKs ignore the new NodeSummary fields (address, latency_ms,
+  bandwidth, datasets_held, bytes_held, connected) and have no stats() call.
+  Backward compatible, verified live. Mechanical to add; not this phase.
 
 ## Open work
 

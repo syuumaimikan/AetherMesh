@@ -53,6 +53,12 @@ pub enum ClientRequest {
     },
     /// Lists the nodes currently in the mesh.
     Nodes,
+    /// Reports what the mesh has moved, saved, and run.
+    ///
+    /// Everything here is a counter or a live count, never a per-task record:
+    /// a dashboard polls this every second and should not be paying for a
+    /// snapshot of the whole task history to do it.
+    Stats,
 }
 
 /// What the controller answers.
@@ -78,9 +84,58 @@ pub enum ClientResponse {
     Nodes {
         nodes: Vec<NodeSummary>,
     },
+    Stats {
+        /// Bytes moved, bytes saved, retries.
+        traffic: TrafficSummary,
+        /// Registrations, heartbeats, tasks, since the controller started.
+        mesh: crate::observability::MetricsSnapshot,
+        /// Nodes registered right now, and how many have a live connection.
+        nodes: usize,
+        nodes_connected: usize,
+        /// Datasets the controller knows the location of, and their total size.
+        datasets: usize,
+        dataset_bytes: u64,
+    },
     Error {
         message: String,
     },
+}
+
+/// What the mesh has moved and what it did not have to.
+///
+/// The derived figures are computed here rather than left to each caller: five
+/// SDKs dividing two integers is five chances to disagree about what the ratio
+/// means.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct TrafficSummary {
+    /// Bytes actually written to sockets, after compression.
+    pub bytes_sent: u64,
+    /// Bytes those transfers represent, before compression.
+    pub bytes_uncompressed: u64,
+    /// Bytes compression kept off the wire.
+    pub bytes_saved_by_compression: u64,
+    /// Wire bytes over original bytes. `1.0` means compression gained nothing.
+    pub compression_ratio: f64,
+    /// Whole datasets not sent because the node already held them.
+    pub transfers_skipped: u64,
+    /// Individual chunks not sent for the same reason.
+    pub chunks_skipped: u64,
+    /// Tasks moved to another node after one refused or timed out.
+    pub retries: u64,
+}
+
+impl From<crate::observability::TrafficSnapshot> for TrafficSummary {
+    fn from(snapshot: crate::observability::TrafficSnapshot) -> Self {
+        Self {
+            bytes_sent: snapshot.data_bytes_sent,
+            bytes_uncompressed: snapshot.data_bytes_uncompressed,
+            bytes_saved_by_compression: snapshot.compression_saved_bytes(),
+            compression_ratio: snapshot.compression_ratio(),
+            transfers_skipped: snapshot.transfers_skipped,
+            chunks_skipped: snapshot.chunks_skipped,
+            retries: snapshot.retries,
+        }
+    }
 }
 
 /// One node, as a client sees it.
@@ -95,9 +150,32 @@ pub struct NodeSummary {
     /// could satisfy before submitting anything.
     #[serde(default)]
     pub labels: aether_core::Labels,
+    /// `host:port` other nodes reach this one on.
+    #[serde(default)]
+    pub address: String,
+    /// Measured round-trip latency, once the prober has measured it.
+    #[serde(default)]
+    pub latency_ms: Option<f32>,
+    /// Measured link speed, once the prober has measured it.
+    #[serde(default)]
+    pub bandwidth_bytes_per_sec: Option<u64>,
+    /// Datasets this node already holds — work reading them costs no transfer.
+    #[serde(default)]
+    pub datasets_held: usize,
+    #[serde(default)]
+    pub bytes_held: u64,
+    /// Whether the controller has a live connection to it right now.
+    ///
+    /// A node can be registered and unreachable: the registry keeps it until
+    /// the heartbeat times out, deliberately.
+    #[serde(default)]
+    pub connected: bool,
 }
 
 impl From<&NodeInfo> for NodeSummary {
+    /// What can be said about a node from the node alone. Locality and
+    /// connectedness are properties of the mesh, so they come out empty here;
+    /// [`NodeSummary::in_mesh`] fills them.
     fn from(info: &NodeInfo) -> Self {
         Self {
             node_id: info.id.to_string(),
@@ -106,6 +184,25 @@ impl From<&NodeInfo> for NodeSummary {
             cpu_usage: info.metrics.cpu_usage,
             memory_usage: info.metrics.memory_usage,
             labels: info.labels.clone(),
+            address: info.address.clone(),
+            latency_ms: info.latency_ms,
+            bandwidth_bytes_per_sec: info.bandwidth_bytes_per_sec,
+            datasets_held: 0,
+            bytes_held: 0,
+            connected: false,
+        }
+    }
+}
+
+impl NodeSummary {
+    /// The full picture: the node, plus what the mesh knows about it.
+    pub fn in_mesh(info: &NodeInfo, state: &MeshState) -> Self {
+        let (datasets_held, bytes_held) = state.catalog.held_by(info.id);
+        Self {
+            datasets_held,
+            bytes_held,
+            connected: state.connections.is_connected(info.id),
+            ..Self::from(info)
         }
     }
 }
@@ -124,7 +221,10 @@ pub enum ClientCommand {
         reply: oneshot::Sender<Result<TaskResult, DispatchError>>,
     },
     Nodes {
-        reply: oneshot::Sender<Vec<NodeInfo>>,
+        reply: oneshot::Sender<Vec<NodeSummary>>,
+    },
+    Stats {
+        reply: oneshot::Sender<ClientResponse>,
     },
 }
 
@@ -174,7 +274,16 @@ pub async fn run_dispatcher<S, T>(
                 let _ = reply.send(result);
             }
             ClientCommand::Nodes { reply } => {
-                let _ = reply.send(controller.registry().nodes());
+                let nodes = controller
+                    .registry()
+                    .nodes()
+                    .iter()
+                    .map(|info| NodeSummary::in_mesh(info, &state))
+                    .collect();
+                let _ = reply.send(nodes);
+            }
+            ClientCommand::Stats { reply } => {
+                let _ = reply.send(stats(&state));
             }
         }
     }
@@ -274,6 +383,7 @@ async fn serve_request(request: &ClientRequest, gateway: &ClientGateway) -> Clie
             .await
         }
         ClientRequest::Nodes => nodes(gateway).await,
+        ClientRequest::Stats => stats_of(gateway).await,
     };
 
     outcome.unwrap_or_else(|message| ClientResponse::Error { message })
@@ -351,9 +461,32 @@ async fn nodes(gateway: &ClientGateway) -> Result<ClientResponse, String> {
         .await
         .map_err(|_| "node listing was dropped".to_string())?;
 
-    Ok(ClientResponse::Nodes {
-        nodes: nodes.iter().map(NodeSummary::from).collect(),
-    })
+    Ok(ClientResponse::Nodes { nodes })
+}
+
+async fn stats_of(gateway: &ClientGateway) -> Result<ClientResponse, String> {
+    let (reply, answer) = oneshot::channel();
+    gateway.send(ClientCommand::Stats { reply }).await?;
+    answer.await.map_err(|_| "stats were dropped".to_string())
+}
+
+/// Reads the live mesh into one frame.
+fn stats(state: &MeshState) -> ClientResponse {
+    let nodes = state.nodes();
+    let nodes_connected = nodes
+        .iter()
+        .filter(|node| state.connections.is_connected(node.id))
+        .count();
+    let (datasets, dataset_bytes) = state.catalog.totals();
+
+    ClientResponse::Stats {
+        traffic: state.traffic.snapshot().into(),
+        mesh: state.metrics.snapshot(),
+        nodes: nodes.len(),
+        nodes_connected,
+        datasets,
+        dataset_bytes,
+    }
 }
 
 fn decode(data: &str) -> Result<Vec<u8>, String> {
@@ -551,6 +684,103 @@ mod tests {
 
         // Silently dropping it would run the task somewhere it was not allowed.
         assert!(matches!(response, ClientResponse::Error { .. }));
+    }
+
+    #[tokio::test]
+    async fn stats_report_what_the_mesh_moved_and_did_not_move() {
+        let state = MeshState::new();
+        let controller = Controller::new(
+            LeastLoadedScheduler::new(),
+            SimulatedMesh::new(),
+            state.catalog.clone(),
+        )
+        .with_traffic_stats(state.traffic.clone());
+        let (gateway, commands) = ClientGateway::new(8);
+        tokio::spawn(run_dispatcher(controller, state.clone(), commands));
+        register(&state, "worker");
+
+        // Publish, then run two tasks over the same dataset: one transfer, one
+        // skip. That difference is the whole product, so it is what stats show.
+        let published = serve_request(
+            &ClientRequest::Publish {
+                data: BASE64.encode(vec![7u8; 4096]),
+            },
+            &gateway,
+        )
+        .await;
+        let ClientResponse::Published { data_id, .. } = published else {
+            panic!("publish failed: {published:?}");
+        };
+
+        for _ in 0..2 {
+            let response = serve_request(
+                &ClientRequest::Submit {
+                    kind: kind::ECHO.to_string(),
+                    payload: String::new(),
+                    inputs: vec![data_id.clone()],
+                    constraints: Vec::new(),
+                    module: None,
+                },
+                &gateway,
+            )
+            .await;
+            assert!(
+                matches!(response, ClientResponse::Result { success: true, .. }),
+                "{response:?}"
+            );
+        }
+
+        match serve_request(&ClientRequest::Stats, &gateway).await {
+            ClientResponse::Stats {
+                traffic,
+                mesh,
+                nodes,
+                datasets,
+                dataset_bytes,
+                ..
+            } => {
+                assert_eq!(traffic.bytes_uncompressed, 4096, "sent once");
+                assert_eq!(traffic.transfers_skipped, 1, "and skipped once");
+                assert!(traffic.bytes_sent > 0);
+                assert_eq!(mesh.tasks_completed, 0, "the simulator reports none");
+                assert_eq!(nodes, 1);
+                assert_eq!((datasets, dataset_bytes), (1, 4096));
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn traffic_summaries_derive_the_figures_so_sdks_do_not_have_to() {
+        let traffic = crate::observability::TrafficStats::new();
+        traffic.record_sent(250, 1000);
+
+        let summary = TrafficSummary::from(traffic.snapshot());
+        assert_eq!(summary.bytes_saved_by_compression, 750);
+        assert_eq!(summary.compression_ratio, 0.25);
+    }
+
+    #[tokio::test]
+    async fn a_node_summary_carries_what_a_dashboard_needs() {
+        let state = MeshState::new();
+        let mut info = NodeInfo::new(aether_core::NodeId::generate(), "rpi4", "10.0.0.4:7001", 4)
+            .with_label("kind", "arm")
+            .with_bandwidth(12_500_000)
+            .with_latency_ms(4.5);
+        info.update_metrics(aether_core::NodeMetrics::new(0.3, 0.6, 4096));
+
+        let dataset = aether_core::DataDescriptor::new(aether_core::DataId::of(b"set"), 2048);
+        state.catalog.record(dataset, info.id);
+
+        let summary = NodeSummary::in_mesh(&info, &state);
+
+        assert_eq!(summary.address, "10.0.0.4:7001");
+        assert_eq!(summary.latency_ms, Some(4.5));
+        assert_eq!(summary.bandwidth_bytes_per_sec, Some(12_500_000));
+        assert_eq!((summary.datasets_held, summary.bytes_held), (1, 2048));
+        // Registered is not the same as reachable, and a dashboard has to be
+        // able to tell them apart.
+        assert!(!summary.connected);
     }
 
     #[tokio::test]
