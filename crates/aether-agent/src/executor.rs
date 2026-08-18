@@ -28,7 +28,14 @@ pub fn execute(node_id: NodeId, task: &Task, store: &DataStore) -> TaskResult {
 
     let elapsed = started.elapsed();
     match outcome {
-        Ok(output) => TaskResult::success(task.id, node_id, output, elapsed),
+        // The output stays here as well as travelling back. A later task in
+        // the same workflow that reads it will be scheduled onto this node and
+        // find it already in place, which is the entire point of the project
+        // applied to its own intermediate results.
+        Ok(output) => {
+            let descriptor = store.put(output.clone());
+            TaskResult::produced(task.id, node_id, output, elapsed, descriptor.id)
+        }
         Err(message) => TaskResult::failure(task.id, node_id, message, elapsed),
     }
 }

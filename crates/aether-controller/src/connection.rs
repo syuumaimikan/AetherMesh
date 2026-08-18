@@ -319,6 +319,7 @@ fn name_of(response: &ClientResponse) -> &'static str {
         ClientResponse::Result { .. } => "result",
         ClientResponse::Nodes { .. } => "nodes",
         ClientResponse::Stats { .. } => "stats",
+        ClientResponse::Workflow { .. } => "workflow",
         ClientResponse::Error { .. } => "error",
     }
 }

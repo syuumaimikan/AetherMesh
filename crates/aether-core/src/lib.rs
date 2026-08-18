@@ -10,12 +10,14 @@ pub mod labels;
 pub mod node;
 pub mod store;
 pub mod task;
+pub mod workflow;
 
 pub use chunk::{ChunkAssembler, ChunkError, ChunkManifest, DEFAULT_CHUNK_SIZE};
 pub use compress::{Codec, CompressError, CompressionPolicy};
 pub use data::{DataDescriptor, DataId};
-pub use id::{NodeId, TaskId};
+pub use id::{NodeId, TaskId, WorkflowId};
 pub use labels::{Constraint, ConstraintParseError, Labels};
 pub use node::{NodeInfo, NodeMetrics};
 pub use store::{DataStore, DataStoreError};
 pub use task::{Priority, PriorityParseError, Task, TaskOutcome, TaskResult};
+pub use workflow::{Step, Workflow, WorkflowError};

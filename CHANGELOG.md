@@ -21,6 +21,14 @@ from 0.1.0 onward. Until then, `main` is the release.
   Dispatch was strictly first-come, first-served before this — and, since one
   task is dispatched at a time, a long backlog meant urgent work waited behind
   all of it.
+- **Workflows** — tasks that depend on other tasks, run in dependency order.
+  A step's output is kept on the node that produced it and recorded in the same
+  catalog as any published dataset, so the existing locality score already
+  prefers that node for whatever reads it next. Measured on a live three-node
+  mesh: three chained steps, 8 MiB flowing through them, **zero bytes** of
+  intermediate data moved. Cycles and dangling dependencies are refused before
+  anything runs; a failed step stops what waits on it and reports which steps
+  were skipped.
 - **A regression check that runs in CI** (`aether-benchmark regress`). Every
   push builds a real controller and two real agents, reruns the network
   benchmark, and fails if traffic reduction or bytes moved drifted from

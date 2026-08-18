@@ -62,6 +62,13 @@ pub enum ClientRequest {
         #[serde(default)]
         module: Option<String>,
     },
+    /// Runs several tasks, each after the ones it depends on.
+    ///
+    /// `depends_on` holds indices into `steps`. Every dependency's output
+    /// becomes an input of the step that waits for it, so a step reads what
+    /// the steps before it produced — and, because the mesh knows which node
+    /// holds that output, reads it without moving it.
+    Workflow { steps: Vec<WorkflowStep> },
     /// Lists the nodes currently in the mesh.
     Nodes,
     /// Reports what the mesh has moved, saved, and run.
@@ -70,6 +77,37 @@ pub enum ClientRequest {
     /// a dashboard polls this every second and should not be paying for a
     /// snapshot of the whole task history to do it.
     Stats,
+}
+
+/// One step of a submitted workflow.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorkflowStep {
+    pub kind: String,
+    #[serde(default)]
+    pub payload: String,
+    #[serde(default)]
+    pub inputs: Vec<String>,
+    #[serde(default)]
+    pub constraints: Vec<String>,
+    #[serde(default)]
+    pub priority: Option<String>,
+    #[serde(default)]
+    pub module: Option<String>,
+    /// Indices of earlier steps this one waits for.
+    #[serde(default)]
+    pub depends_on: Vec<usize>,
+}
+
+/// What one step of a workflow did.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StepOutcome {
+    pub step: usize,
+    pub node_id: String,
+    pub success: bool,
+    pub output: String,
+    pub duration_ms: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 /// What the controller answers.
@@ -94,6 +132,15 @@ pub enum ClientResponse {
     },
     Nodes {
         nodes: Vec<NodeSummary>,
+    },
+    Workflow {
+        /// One entry per step that ran, in the order the steps were written.
+        steps: Vec<StepOutcome>,
+        /// Steps never attempted because something they depend on failed.
+        /// Reported rather than silently missing: a workflow that stopped
+        /// early and one that finished are different outcomes.
+        skipped: Vec<usize>,
+        success: bool,
     },
     Stats {
         /// Bytes moved, bytes saved, retries.
@@ -242,6 +289,10 @@ pub enum ClientCommand {
     Stats {
         reply: oneshot::Sender<ClientResponse>,
     },
+    Workflow {
+        workflow: Box<aether_core::Workflow>,
+        reply: oneshot::Sender<ClientResponse>,
+    },
 }
 
 /// Handle clients use to reach the dispatcher. Cheap to clone.
@@ -297,19 +348,28 @@ pub async fn run_dispatcher_with<S, T>(
     T: TaskTransport + Send,
 {
     let mut closed = false;
+    let mut flows = Vec::new();
 
     loop {
         // Block only when there is nothing to run. With work waiting, take
         // whatever else has arrived and rank it against what is already here —
         // that is the whole point of having a queue rather than a channel.
-        if queue.is_empty() {
+        if queue.is_empty() && flows.is_empty() {
             match commands.recv().await {
-                Some(command) => admit(command, &mut queue, &mut controller, &state),
+                Some(command) => admit(command, &mut queue, &mut flows, &mut controller, &state),
                 None => return,
             }
         }
         while let Ok(command) = commands.try_recv() {
-            admit(command, &mut queue, &mut controller, &state);
+            admit(command, &mut queue, &mut flows, &mut controller, &state);
+        }
+
+        // Workflows run whole. Interleaving one workflow's steps with
+        // another's would let a later step start before the step it waits
+        // for, which is the one thing a workflow is for.
+        for (workflow, reply) in std::mem::take(&mut flows) {
+            let response = run_flow(&mut controller, &state, &workflow).await;
+            let _ = reply.send(response);
         }
         if !closed && commands.is_closed() {
             closed = true;
@@ -330,7 +390,8 @@ pub async fn run_dispatcher_with<S, T>(
         state.queue.set_depth(queue.len());
 
         let Some(entry) = queue.pop(now) else {
-            // Everything admitted was a read, and the client hung up.
+            // Everything admitted was a read or a workflow, and the client
+            // hung up.
             if closed {
                 return;
             }
@@ -346,9 +407,11 @@ pub async fn run_dispatcher_with<S, T>(
 }
 
 /// Answers a read immediately; puts a submission in the queue.
+#[allow(clippy::type_complexity)]
 fn admit<S, T>(
     command: ClientCommand,
     queue: &mut Queue<oneshot::Sender<Result<TaskResult, DispatchError>>>,
+    flows: &mut Vec<(Box<aether_core::Workflow>, oneshot::Sender<ClientResponse>)>,
     controller: &mut Controller<S, T>,
     state: &MeshState,
 ) where
@@ -398,6 +461,48 @@ fn admit<S, T>(
         ClientCommand::Stats { reply } => {
             let _ = reply.send(stats(state));
         }
+        // Handed on rather than run here: a workflow is awaited step by
+        // step, and this function is not async.
+        ClientCommand::Workflow { workflow, reply } => flows.push((workflow, reply)),
+    }
+}
+
+/// Runs a whole workflow and renders the outcome for a client.
+async fn run_flow<S, T>(
+    controller: &mut Controller<S, T>,
+    state: &MeshState,
+    workflow: &aether_core::Workflow,
+) -> ClientResponse
+where
+    S: aether_scheduler::Scheduler,
+    T: TaskTransport + Send,
+{
+    controller.sync_registry(state.nodes());
+
+    match crate::flow::run_workflow(controller, workflow).await {
+        Ok(flow) => ClientResponse::Workflow {
+            steps: flow
+                .results
+                .iter()
+                .enumerate()
+                .map(|(step, result)| StepOutcome {
+                    step,
+                    node_id: result.node_id.to_string(),
+                    success: result.is_success(),
+                    output: BASE64.encode(result.output().unwrap_or_default()),
+                    duration_ms: result.duration.as_secs_f64() * 1000.0,
+                    error: match &result.outcome {
+                        aether_core::TaskOutcome::Failure { message } => Some(message.clone()),
+                        aether_core::TaskOutcome::Success { .. } => None,
+                    },
+                })
+                .collect(),
+            success: flow.is_success(),
+            skipped: flow.skipped,
+        },
+        Err(error) => ClientResponse::Error {
+            message: error.to_string(),
+        },
     }
 }
 
@@ -480,6 +585,7 @@ async fn serve_request(request: &ClientRequest, gateway: &ClientGateway) -> Clie
         request @ ClientRequest::Submit { .. } => submit(request, gateway).await,
         ClientRequest::Nodes => nodes(gateway).await,
         ClientRequest::Stats => stats_of(gateway).await,
+        ClientRequest::Workflow { steps } => workflow(steps, gateway).await,
     };
 
     outcome.unwrap_or_else(|message| ClientResponse::Error { message })
@@ -570,6 +676,60 @@ async fn submit(
             message: error.to_string(),
         },
     })
+}
+
+/// Builds a workflow from what a client sent and runs it.
+///
+/// Validation happens here, before a single step is dispatched: a cycle or a
+/// dependency on a step that does not exist should cost nothing, and a
+/// workflow that fails halfway leaves work half-done on real machines.
+async fn workflow(
+    steps: &[WorkflowStep],
+    gateway: &ClientGateway,
+) -> Result<ClientResponse, String> {
+    let mut built = Vec::with_capacity(steps.len());
+    for step in steps {
+        let payload = decode(&step.payload)?;
+        let inputs = step
+            .inputs
+            .iter()
+            .map(|id| parse_data_id(id))
+            .collect::<Result<Vec<_>, _>>()?;
+        let constraints = step
+            .constraints
+            .iter()
+            .map(|text| text.parse::<aether_core::Constraint>())
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?;
+        let priority: Priority = step
+            .priority
+            .as_deref()
+            .unwrap_or_default()
+            .parse()
+            .map_err(|error: aether_core::PriorityParseError| error.to_string())?;
+
+        let task = match step.module.as_deref() {
+            Some(module) => Task::wasm(parse_data_id(module)?, payload).with_inputs(inputs),
+            None => Task::new(&step.kind, payload).with_inputs(inputs),
+        }
+        .with_constraints(constraints)
+        .with_priority(priority);
+
+        built.push(aether_core::Step::after(task, step.depends_on.clone()));
+    }
+
+    let workflow = aether_core::Workflow::new(built).map_err(|error| error.to_string())?;
+
+    let (reply, answer) = oneshot::channel();
+    gateway
+        .send(ClientCommand::Workflow {
+            workflow: Box::new(workflow),
+            reply,
+        })
+        .await?;
+    answer
+        .await
+        .map_err(|_| "the workflow was dropped".to_string())
 }
 
 async fn nodes(gateway: &ClientGateway) -> Result<ClientResponse, String> {
@@ -1210,6 +1370,140 @@ mod tests {
         // Registered is not the same as reachable, and a dashboard has to be
         // able to tell them apart.
         assert!(!summary.connected);
+    }
+
+    /// A gateway whose nodes run the agent's real built-in tasks, so `hash`
+    /// works and results carry the output id a workflow depends on.
+    fn real_gateway() -> (ClientGateway, MeshState) {
+        let state = MeshState::new();
+        let controller = Controller::new(
+            LeastLoadedScheduler::new(),
+            SimulatedMesh::with_executor(aether_agent::execute),
+            DataCatalog::new(),
+        );
+        let (gateway, commands) = ClientGateway::new(8);
+        tokio::spawn(run_dispatcher(controller, state.clone(), commands));
+        (gateway, state)
+    }
+
+    fn step(kind: &str, payload: &[u8], depends_on: Vec<usize>) -> WorkflowStep {
+        WorkflowStep {
+            kind: kind.to_string(),
+            payload: BASE64.encode(payload),
+            inputs: Vec::new(),
+            constraints: Vec::new(),
+            priority: None,
+            module: None,
+            depends_on,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_workflow_runs_its_steps_in_dependency_order() {
+        let (gateway, state) = real_gateway();
+        register(&state, "worker");
+
+        let response = serve_request(
+            &ClientRequest::Workflow {
+                steps: vec![
+                    step(kind::ECHO, b"seed", Vec::new()),
+                    step(kind::HASH, b"", vec![0]),
+                    step(kind::HASH, b"", vec![1]),
+                ],
+            },
+            &gateway,
+        )
+        .await;
+
+        match response {
+            ClientResponse::Workflow {
+                steps,
+                skipped,
+                success,
+            } => {
+                assert!(success, "{steps:?}");
+                assert_eq!(steps.len(), 3);
+                assert!(skipped.is_empty());
+                assert_eq!(BASE64.decode(&steps[0].output).unwrap(), b"seed");
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_workflow_with_a_cycle_is_refused_before_anything_runs() {
+        let (gateway, state) = real_gateway();
+        register(&state, "worker");
+
+        let response = serve_request(
+            &ClientRequest::Workflow {
+                steps: vec![
+                    step(kind::ECHO, b"a", vec![1]),
+                    step(kind::ECHO, b"b", vec![0]),
+                ],
+            },
+            &gateway,
+        )
+        .await;
+
+        // Discovering this halfway through would leave work half-done on
+        // machines somebody else owns.
+        match response {
+            ClientResponse::Error { message } => assert!(message.contains("cycle"), "{message}"),
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_workflow_naming_a_step_that_does_not_exist_is_refused() {
+        let (gateway, state) = real_gateway();
+        register(&state, "worker");
+
+        let response = serve_request(
+            &ClientRequest::Workflow {
+                steps: vec![step(kind::ECHO, b"a", vec![9])],
+            },
+            &gateway,
+        )
+        .await;
+
+        assert!(
+            matches!(response, ClientResponse::Error { .. }),
+            "{response:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_step_is_reported_and_its_dependents_are_listed_as_skipped() {
+        let (gateway, state) = real_gateway();
+        register(&state, "worker");
+
+        let response = serve_request(
+            &ClientRequest::Workflow {
+                steps: vec![
+                    step("nonsense", b"", Vec::new()),
+                    step(kind::HASH, b"", vec![0]),
+                ],
+            },
+            &gateway,
+        )
+        .await;
+
+        match response {
+            ClientResponse::Workflow {
+                steps,
+                skipped,
+                success,
+            } => {
+                // A workflow that stopped early and one that finished are
+                // different outcomes, and a client has to be able to tell.
+                assert!(!success);
+                assert_eq!(steps.len(), 1);
+                assert!(!steps[0].success);
+                assert_eq!(skipped, [1]);
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
     }
 
     #[tokio::test]

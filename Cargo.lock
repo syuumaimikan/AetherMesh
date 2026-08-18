@@ -79,6 +79,7 @@ dependencies = [
  "aether-scheduler",
  "anyhow",
  "base64",
+ "blake3",
  "clap",
  "rcgen",
  "serde",

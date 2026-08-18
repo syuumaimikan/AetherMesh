@@ -17,6 +17,7 @@ one terminal, then several, then several machines, then a browser.
 | [`08-secure-mesh`](08-secure-mesh) | TLS, tokens, and mutual TLS end to end | Rust |
 | [`09-labeled-nodes`](09-labeled-nodes) | Sending work only to machines that qualify | Python 3.10+ |
 | [`10-executor`](10-executor) | Swapping a Python thread pool for the mesh | Python 3.10+ |
+| [`11-workflow`](11-workflow) | Steps that read each other's output, without moving it | Python 3.10+ |
 
 ## The 30-second version
 

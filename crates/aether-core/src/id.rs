@@ -50,6 +50,10 @@ macro_rules! define_id {
 
 define_id!(NodeId, "Identifies a node participating in the mesh.");
 define_id!(TaskId, "Identifies a submitted task.");
+define_id!(
+    WorkflowId,
+    "Identifies a set of tasks submitted together, with an order between them."
+);
 
 #[cfg(test)]
 mod tests {

@@ -58,6 +58,32 @@ score = compute_cost + transfer_cost + latency_penalty − locality_bonus
 
 Lower wins. Every weight is configurable and the score comes back term by term, so you can see *why* a node was chosen. Three policies ship: `LeastLoadedScheduler`, `LocalityScheduler`, `AdvancedScheduler`.
 
+### Work that depends on other work stays put
+
+A single task runs where it is cheapest. A workflow is where that compounds: if step B reads what step A produced, running B anywhere but where A ran costs the whole intermediate result.
+
+```json
+{"type": "workflow", "steps": [
+  {"kind": "echo", "payload": "..."},
+  {"kind": "hash", "depends_on": [0]},
+  {"kind": "hash", "depends_on": [1]}
+]}
+```
+
+Measured on a live three-node mesh with 8 MiB flowing through the chain:
+
+```
+  step 0: ran on 70ebda25 in 0.9 ms
+  step 1: ran on 70ebda25 in 1.7 ms
+  step 2: ran on 70ebda25 in 0.0 ms
+
+intermediate data moved: 0 bytes
+```
+
+There is no separate rule making that happen. A task's output is kept on the node that produced it and recorded in the same catalog as any published dataset, so the ordinary locality score already prefers that node. **The mechanism that keeps a published dataset still is the one that keeps a computed one still.**
+
+Cycles and dependencies on steps that do not exist are refused before anything runs; a step that fails stops what waits on it and says which steps it skipped. [`examples/11-workflow`](examples/11-workflow).
+
 ### Some machines are not interchangeable
 
 Cost decides where work is *cheapest*. Labels decide where it is *allowed*. An agent declares what it is, and a task says what it needs:

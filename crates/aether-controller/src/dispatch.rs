@@ -358,6 +358,7 @@ impl<S: Scheduler, T: TaskTransport + Send> Controller<S, T> {
 
             match self.try_once(node_id, &task).await {
                 Ok(result) => {
+                    self.record_output(&result);
                     if let Some(cache) = &self.cache {
                         cache.put(&task, &result);
                     }
@@ -378,6 +379,36 @@ impl<S: Scheduler, T: TaskTransport + Send> Controller<S, T> {
         }
 
         Err(DispatchError::NoNodeAvailable(task.id))
+    }
+
+    /// Notes where a task left its output, so a later task that reads it is
+    /// scheduled onto the node that already has it.
+    ///
+    /// The controller keeps a copy too — the result came back over the wire
+    /// regardless — which is what lets a dependent run somewhere else if the
+    /// producing node has since left.
+    fn record_output(&mut self, result: &TaskResult) {
+        let Some(output_id) = result.output_id else {
+            return;
+        };
+        let Some(output) = result.output() else {
+            return;
+        };
+
+        let descriptor = DataDescriptor::new(output_id, output.len() as u64);
+        // The store verifies the hash, so a node cannot make the controller
+        // hold bytes under an id they do not belong to.
+        if let Err(error) = self.store.insert(descriptor, output.to_vec()) {
+            warn!(%error, node_id = %result.node_id, "rejecting a task output");
+            return;
+        }
+        self.catalog.record(descriptor, result.node_id);
+        debug!(
+            %output_id,
+            node_id = %result.node_id,
+            bytes = output.len(),
+            "task output is available where it was produced"
+        );
     }
 
     /// One placement attempt: move the missing inputs, then run the task.

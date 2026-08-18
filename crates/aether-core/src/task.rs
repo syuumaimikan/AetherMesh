@@ -222,6 +222,14 @@ pub struct TaskResult {
     pub node_id: NodeId,
     pub outcome: TaskOutcome,
     pub duration: Duration,
+    /// Content address of the output, which the node kept a copy of.
+    ///
+    /// This is what lets a workflow keep its intermediate results still. A
+    /// later task that reads this id finds it already on the node that
+    /// produced it, so the locality bonus applies and nothing has to move.
+    /// `None` on failure, and on a node too old to report one.
+    #[serde(default)]
+    pub output_id: Option<DataId>,
 }
 
 impl TaskResult {
@@ -231,6 +239,22 @@ impl TaskResult {
             node_id,
             outcome: TaskOutcome::Success { output },
             duration,
+            output_id: None,
+        }
+    }
+
+    /// Same, naming the output the node kept so later tasks can read it in
+    /// place.
+    pub fn produced(
+        task_id: TaskId,
+        node_id: NodeId,
+        output: Vec<u8>,
+        duration: Duration,
+        output_id: DataId,
+    ) -> Self {
+        Self {
+            output_id: Some(output_id),
+            ..Self::success(task_id, node_id, output, duration)
         }
     }
 
@@ -247,6 +271,8 @@ impl TaskResult {
                 message: message.into(),
             },
             duration,
+            // Nothing was produced, so there is nothing to point at.
+            output_id: None,
         }
     }
 
