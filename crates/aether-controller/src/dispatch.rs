@@ -181,6 +181,10 @@ pub struct Controller<S, T> {
     /// API and the scrape endpoint can read them; this task owns the
     /// `Controller` exclusively, and these numbers are the point of the project.
     traffic: crate::observability::TrafficStats,
+    /// Where finished workflow steps are recorded, when the operator asked for
+    /// it. Shared because a workflow's steps run concurrently and each one
+    /// records itself as it lands.
+    checkpoint: Option<Arc<crate::checkpoint::Journal>>,
 }
 
 // `Send` is required because the transport batches chunk sends, and a batched
@@ -202,7 +206,24 @@ impl<S: Scheduler, T: TaskTransport + Send + Sync> Controller<S, T> {
             retry: RetryPolicy::default(),
             cache: None,
             traffic: crate::observability::TrafficStats::new(),
+            checkpoint: None,
         }
+    }
+
+    /// Records finished workflow steps to `journal`, so a named run that is
+    /// submitted again picks up where it stopped.
+    ///
+    /// Only [`crate::flow::run_workflow_resumable`] reads or writes it. An
+    /// ordinary submission is not journalled: a single task has nothing to
+    /// resume onto.
+    pub fn with_checkpoint(mut self, journal: Arc<crate::checkpoint::Journal>) -> Self {
+        self.checkpoint = Some(journal);
+        self
+    }
+
+    /// The journal, when one was configured.
+    pub fn checkpoint(&self) -> Option<&Arc<crate::checkpoint::Journal>> {
+        self.checkpoint.as_ref()
     }
 
     /// Sets when transfers are compressed.

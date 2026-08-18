@@ -58,6 +58,15 @@ queue_rejection = "reject"
 # can override this per submission with `timeout_ms`.
 queue_timeout_secs = 0
 
+# Where finished workflow steps are recorded, so a named run that is submitted
+# again picks up where it stopped. Unset, the default, turns it off.
+#
+# It holds step numbers and the ids of what they produced, never the outputs:
+# those stay on the nodes that computed them. Steps are skipped only when the
+# workflow matches what the run was recorded against and the output is still
+# in the mesh, so this cannot quietly answer with somebody else's results.
+# checkpoint_path = "/var/lib/aethermesh/checkpoints.jsonl"
+
 # Seconds between autoscaler readings. 0 turns it off, which is the default.
 # It only ever recommends: acting on the recommendation is your decision, or
 # aether-cloud's. A bad reading should cost a log line, not a bill.

@@ -68,7 +68,18 @@ pub enum ClientRequest {
     /// becomes an input of the step that waits for it, so a step reads what
     /// the steps before it produced — and, because the mesh knows which node
     /// holds that output, reads it without moving it.
-    Workflow { steps: Vec<WorkflowStep> },
+    Workflow {
+        steps: Vec<WorkflowStep>,
+        /// Names this run, so submitting the same workflow again resumes it
+        /// rather than repeating it.
+        ///
+        /// Needs a controller started with `checkpoint_path`; without one the
+        /// name is accepted and the workflow simply runs from the start. The
+        /// name is yours to choose and yours to reuse — a nightly job that
+        /// always calls itself `nightly` is the intended shape.
+        #[serde(default)]
+        run: Option<String>,
+    },
     /// Lists the nodes currently in the mesh.
     Nodes,
     /// Reports what the mesh has moved, saved, and run.
@@ -101,6 +112,12 @@ pub struct WorkflowStep {
 /// What one step of a workflow did.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StepOutcome {
+    /// Which step of the submitted workflow this is.
+    ///
+    /// Not the position in `steps`: a workflow with a skipped or resumed step
+    /// reports fewer outcomes than it has steps, and the difference between
+    /// "step 2 failed" and "the second thing you got told about failed" is the
+    /// difference between a usable report and a confusing one.
     pub step: usize,
     pub node_id: String,
     pub success: bool,
@@ -140,6 +157,10 @@ pub enum ClientResponse {
         /// Reported rather than silently missing: a workflow that stopped
         /// early and one that finished are different outcomes.
         skipped: Vec<usize>,
+        /// Steps an earlier run of this name already finished, whose output is
+        /// still on a node. Absent unless the run was resumed.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        resumed: Vec<usize>,
         success: bool,
     },
     Stats {
@@ -291,6 +312,7 @@ pub enum ClientCommand {
     },
     Workflow {
         workflow: Box<aether_core::Workflow>,
+        run: Option<String>,
         reply: oneshot::Sender<ClientResponse>,
     },
 }
@@ -403,8 +425,8 @@ pub async fn run_dispatcher_concurrent<S, T>(
         // Workflows run whole. Interleaving one workflow's steps with
         // another's would let a later step start before the step it waits
         // for, which is the one thing a workflow is for.
-        for (workflow, reply) in std::mem::take(&mut flows) {
-            let response = run_flow(&controller, &state, &workflow).await;
+        for (workflow, run, reply) in std::mem::take(&mut flows) {
+            let response = run_flow(&controller, &state, &workflow, run.as_deref()).await;
             let _ = reply.send(response);
         }
         if !closed && commands.is_closed() {
@@ -467,7 +489,11 @@ pub async fn run_dispatcher_concurrent<S, T>(
 fn admit<S, T>(
     command: ClientCommand,
     queue: &mut Queue<oneshot::Sender<Result<TaskResult, DispatchError>>>,
-    flows: &mut Vec<(Box<aether_core::Workflow>, oneshot::Sender<ClientResponse>)>,
+    flows: &mut Vec<(
+        Box<aether_core::Workflow>,
+        Option<String>,
+        oneshot::Sender<ClientResponse>,
+    )>,
     controller: &Controller<S, T>,
     state: &MeshState,
 ) where
@@ -519,7 +545,11 @@ fn admit<S, T>(
         }
         // Handed on rather than run here: a workflow is awaited step by
         // step, and this function is not async.
-        ClientCommand::Workflow { workflow, reply } => flows.push((workflow, reply)),
+        ClientCommand::Workflow {
+            workflow,
+            run,
+            reply,
+        } => flows.push((workflow, run, reply)),
     }
 }
 
@@ -528,6 +558,7 @@ async fn run_flow<S, T>(
     controller: &std::sync::Arc<Controller<S, T>>,
     state: &MeshState,
     workflow: &aether_core::Workflow,
+    run: Option<&str>,
 ) -> ClientResponse
 where
     S: aether_scheduler::Scheduler + Send + Sync + 'static,
@@ -535,13 +566,18 @@ where
 {
     controller.sync_registry(state.nodes());
 
-    match crate::flow::run_workflow(controller.clone(), workflow).await {
+    let outcome = match run {
+        Some(run) => crate::flow::run_workflow_resumable(controller.clone(), workflow, run).await,
+        None => crate::flow::run_workflow(controller.clone(), workflow).await,
+    };
+
+    match outcome {
         Ok(flow) => ClientResponse::Workflow {
             steps: flow
                 .results
                 .iter()
-                .enumerate()
-                .map(|(step, result)| StepOutcome {
+                .zip(&flow.steps_run)
+                .map(|(result, &step)| StepOutcome {
                     step,
                     node_id: result.node_id.to_string(),
                     success: result.is_success(),
@@ -555,6 +591,7 @@ where
                 .collect(),
             success: flow.is_success(),
             skipped: flow.skipped,
+            resumed: flow.resumed,
         },
         Err(error) => ClientResponse::Error {
             message: error.to_string(),
@@ -641,7 +678,7 @@ async fn serve_request(request: &ClientRequest, gateway: &ClientGateway) -> Clie
         request @ ClientRequest::Submit { .. } => submit(request, gateway).await,
         ClientRequest::Nodes => nodes(gateway).await,
         ClientRequest::Stats => stats_of(gateway).await,
-        ClientRequest::Workflow { steps } => workflow(steps, gateway).await,
+        ClientRequest::Workflow { steps, run } => workflow(steps, run.as_deref(), gateway).await,
     };
 
     outcome.unwrap_or_else(|message| ClientResponse::Error { message })
@@ -741,6 +778,7 @@ async fn submit(
 /// workflow that fails halfway leaves work half-done on real machines.
 async fn workflow(
     steps: &[WorkflowStep],
+    run: Option<&str>,
     gateway: &ClientGateway,
 ) -> Result<ClientResponse, String> {
     let mut built = Vec::with_capacity(steps.len());
@@ -780,6 +818,7 @@ async fn workflow(
     gateway
         .send(ClientCommand::Workflow {
             workflow: Box::new(workflow),
+            run: run.map(str::to_string),
             reply,
         })
         .await?;
@@ -1600,6 +1639,7 @@ mod tests {
                     step(kind::HASH, b"", vec![0]),
                     step(kind::HASH, b"", vec![1]),
                 ],
+                run: None,
             },
             &gateway,
         )
@@ -1609,8 +1649,10 @@ mod tests {
             ClientResponse::Workflow {
                 steps,
                 skipped,
+                resumed,
                 success,
             } => {
+                assert!(resumed.is_empty());
                 assert!(success, "{steps:?}");
                 assert_eq!(steps.len(), 3);
                 assert!(skipped.is_empty());
@@ -1631,6 +1673,7 @@ mod tests {
                     step(kind::ECHO, b"a", vec![1]),
                     step(kind::ECHO, b"b", vec![0]),
                 ],
+                run: None,
             },
             &gateway,
         )
@@ -1652,6 +1695,7 @@ mod tests {
         let response = serve_request(
             &ClientRequest::Workflow {
                 steps: vec![step(kind::ECHO, b"a", vec![9])],
+                run: None,
             },
             &gateway,
         )
@@ -1674,6 +1718,7 @@ mod tests {
                     step("nonsense", b"", Vec::new()),
                     step(kind::HASH, b"", vec![0]),
                 ],
+                run: None,
             },
             &gateway,
         )
@@ -1683,8 +1728,10 @@ mod tests {
             ClientResponse::Workflow {
                 steps,
                 skipped,
+                resumed,
                 success,
             } => {
+                assert!(resumed.is_empty());
                 // A workflow that stopped early and one that finished are
                 // different outcomes, and a client has to be able to tell.
                 assert!(!success);

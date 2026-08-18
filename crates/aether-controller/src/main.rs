@@ -233,6 +233,11 @@ async fn main() -> anyhow::Result<()> {
             );
             controller = controller.with_result_cache(cache);
         }
+        if let Some(path) = &config.checkpoint_path {
+            let journal = aether_controller::Journal::open(path)?;
+            info!(path = %journal.path().display(), "recording finished workflow steps");
+            controller = controller.with_checkpoint(std::sync::Arc::new(journal));
+        }
         info!(
             cpu = config.scheduler_weights.cpu,
             transfer = config.scheduler_weights.transfer,

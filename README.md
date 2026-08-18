@@ -219,6 +219,54 @@ autoscaler recommends more nodes (recommendation only) from=1 to=12  166 queued 
 
 Three readings three seconds apart, then silence once the queue drained. That silence is the feature: a recommendation engine that says something every interval is one you stop reading.
 
+### A workflow that failed halfway does not start over
+
+Name a run, and the steps that finished are recorded. Submit the same workflow
+under the same name again and only what did not finish runs:
+
+```toml
+checkpoint_path = "/var/lib/aethermesh/checkpoints.jsonl"
+```
+
+```json
+{"type": "workflow", "run": "nightly", "steps": [...]}
+```
+
+Measured on a live mesh — a three-step chain whose last step fails:
+
+| | steps run | resumed |
+|---|---|---|
+| first submission | 0, 1, 2 | — |
+| same workflow, same name | **2** | 0, 1 |
+
+The file holds step numbers and the ids of what they produced, never the
+outputs themselves. Those stay on the nodes that computed them, which is where
+the next step wants them anyway; a checkpoint file that accumulated
+intermediate results would be this project reintroducing the exact thing it
+exists to avoid.
+
+Two checks stand between a resume and a wrong answer, and both are real rather
+than assumed. **The workflow has to be the one the run was recorded against** —
+a fingerprint over every step's kind, payload, inputs and dependencies, so
+reusing a name for different work is refused with an error naming both:
+
+```
+run nightly was recorded against a different workflow (recorded 5529f90c…,
+submitted 935af3a4…); use a new run name, or resubmit the workflow it was
+recorded with
+```
+
+And **the output has to still exist**. The journal records what happened, not
+a promise that the node holding it survived; a step whose output is no longer
+anywhere in the mesh runs again.
+
+The honest limit: a **restarted controller** resumes nothing. The journal
+survives the restart, but the catalog of where data lives is in memory and does
+not, so every step runs again — measured, not assumed. What this buys is the
+ordinary case, which is also the common one: a workflow that failed halfway
+while the mesh stayed up. Making a restart resume too needs agents to
+re-announce what they hold, which is a protocol change and not this.
+
 ### Failures are ordinary
 
 Heartbeats stop → the node is evicted and its data locations are forgotten. A node refuses a task → the task is re-dispatched to the next best node, data and all. A task that *ran* and failed is returned as a result, not retried forever.

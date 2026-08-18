@@ -2,6 +2,7 @@
 
 pub mod autoscale;
 pub mod cache;
+pub mod checkpoint;
 pub mod client;
 pub mod config;
 pub mod connection;
@@ -25,6 +26,7 @@ pub mod tls;
 
 pub use autoscale::{Autoscaler, Decision, Policy, Signals, Target};
 pub use cache::{ResultCache, WorkKey};
+pub use checkpoint::{CheckpointError, Journal, Record};
 pub use client::{
     CLIENT_PROTOCOL_VERSION, ClientGateway, ClientRequest, ClientResponse, bind_clients,
     run_dispatcher, run_dispatcher_with, serve_clients,
@@ -33,7 +35,7 @@ pub use config::{ConfigError, ControllerConfig};
 pub use connection::{Connection, ConnectionError, Finished, Published, Stats, SubmitOptions};
 pub use connections::Connections;
 pub use dispatch::{Controller, DispatchError, RetryPolicy, TaskTransport};
-pub use flow::{FlowError, FlowResult, run_workflow};
+pub use flow::{FlowError, FlowResult, run_workflow, run_workflow_resumable};
 pub use health::{DEFAULT_CHECK_INTERVAL, DEFAULT_HEARTBEAT_TIMEOUT, evict_stale_nodes};
 pub use network::{DEFAULT_TASK_TIMEOUT, NetworkTransport};
 pub use observability::{MeshMetrics, MetricsSnapshot};

@@ -80,6 +80,13 @@ pub struct ControllerConfig {
     pub result_cache_entries: usize,
     /// Seconds before a cached result is forgotten. Zero means never.
     pub result_cache_ttl_secs: u64,
+    /// File recording which workflow steps finished, so a named run that is
+    /// submitted again picks up where it stopped. Unset turns it off.
+    ///
+    /// It holds step numbers and the ids of what they produced, never the
+    /// outputs themselves: those stay on the nodes that computed them, which
+    /// is the whole point.
+    pub checkpoint_path: Option<PathBuf>,
 }
 
 impl Default for ControllerConfig {
@@ -110,6 +117,7 @@ impl Default for ControllerConfig {
             probe_bytes: crate::probe::DEFAULT_PROBE_BYTES,
             result_cache_entries: 0,
             result_cache_ttl_secs: 0,
+            checkpoint_path: None,
         }
     }
 }

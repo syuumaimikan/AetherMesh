@@ -16,6 +16,18 @@ from 0.1.0 onward. Until then, `main` is the release.
   machine or spends money on your behalf. A dead band and a cooldown keep it
   from oscillating, and a backlog vetoes scaling down, because low CPU with a
   full queue means blocked rather than idle. Off by default.
+- **A workflow that failed halfway does not start over.** Name a run
+  (`"run": "nightly"`) against a controller started with `checkpoint_path`,
+  and the steps that finished are recorded; submitting the same workflow under
+  the same name runs only what did not finish. The journal holds step numbers
+  and output ids, never the outputs — those stay on the nodes that produced
+  them. A step is skipped only if the workflow matches the fingerprint the run
+  was recorded against and its output is still somewhere in the mesh. A
+  restarted controller resumes nothing, because the catalog of where data
+  lives does not survive it. Off by default.
+- **A workflow result says which step it belongs to.** `StepOutcome.step` was
+  the position in the reply, so a workflow with a skipped step blamed the
+  wrong step for everything after it.
 - **Node labels and task constraints.** An agent declares what it is
   (`--label gpu=true --label region=eu-west`); a task says what it needs
   (`gpu=true`, `region!=us-east`, or a bare `nvme` for "has this label").

@@ -15,7 +15,7 @@ use std::sync::Arc;
 use aether_core::{NodeId, TaskResult, Workflow, WorkflowError};
 use aether_scheduler::Scheduler;
 use tokio::task::JoinSet;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::dispatch::{Controller, DispatchError, TaskTransport};
 
@@ -30,6 +30,8 @@ pub enum FlowError {
         #[source]
         source: DispatchError,
     },
+    #[error(transparent)]
+    Checkpoint(#[from] crate::checkpoint::CheckpointError),
 }
 
 /// Where one step ran and what it cost to put it there.
@@ -54,11 +56,21 @@ pub struct Placement {
 /// What a workflow produced.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FlowResult {
-    /// One result per step, in the order the steps were written — not the
-    /// order they ran in, which nobody asked about.
+    /// One result per step that ran, in the order the steps were written —
+    /// not the order they ran in, which nobody asked about.
+    ///
+    /// Steps that were skipped or resumed are absent, so this is not indexed
+    /// by step number. [`FlowResult::steps_run`] says which step each entry
+    /// belongs to.
     pub results: Vec<TaskResult>,
+    /// The step index of each entry in [`FlowResult::results`].
+    pub steps_run: Vec<usize>,
     /// Steps that were never attempted because something earlier failed.
     pub skipped: Vec<usize>,
+    /// Steps that were not run because a previous run of this workflow already
+    /// finished them and their output is still on a node. Empty unless the run
+    /// was resumed.
+    pub resumed: Vec<usize>,
     /// Where each step ran and whether its inputs were already there.
     pub placements: Vec<Placement>,
     /// Bytes that crossed the wire to run this workflow.
@@ -103,13 +115,8 @@ impl FlowResult {
 
 /// Runs every step, each after the ones it depends on.
 ///
-/// One step at a time, including steps that do not depend on each other.
-/// That is a real limitation rather than a choice: `Controller::submit` takes
-/// `&mut self`, so running two steps at once needs the controller to stop
-/// being exclusively owned for the length of a dispatch. Until then, a
-/// workflow's wall clock is the sum of its steps, and independent branches
-/// will concentrate on one node because there is never any contention to
-/// spread them.
+/// Steps that do not depend on each other go out together, so a workflow's
+/// wall clock is the depth of the graph rather than the sum of its steps.
 ///
 /// A step that fails stops the steps waiting on it: running D on B's output
 /// when B failed produces a confident answer computed from nothing. Branches
@@ -123,9 +130,45 @@ where
     S: Scheduler + Send + Sync + 'static,
     T: TaskTransport + Send + Sync + 'static,
 {
+    run_inner(controller, workflow, None).await
+}
+
+/// Same, but a step this run finishes is recorded, and a step an earlier run
+/// under the same name already finished is not run again.
+///
+/// Needs [`Controller::with_checkpoint`]; without a journal this is exactly
+/// [`run_workflow`], which is the useful behaviour for an operator who has not
+/// configured one — the workflow runs, it just runs from the start.
+///
+/// Two things have to be true before a step is skipped, and both are checked
+/// rather than assumed. The workflow has to be the one the run was recorded
+/// against, or a step is skipped on the strength of some other graph's
+/// progress. And the output has to still be somewhere in the mesh: the journal
+/// records what happened, not a promise that the node holding it survived.
+pub async fn run_workflow_resumable<S, T>(
+    controller: Arc<Controller<S, T>>,
+    workflow: &Workflow,
+    run: &str,
+) -> Result<FlowResult, FlowError>
+where
+    S: Scheduler + Send + Sync + 'static,
+    T: TaskTransport + Send + Sync + 'static,
+{
+    run_inner(controller, workflow, Some(run)).await
+}
+
+async fn run_inner<S, T>(
+    controller: Arc<Controller<S, T>>,
+    workflow: &Workflow,
+    run: Option<&str>,
+) -> Result<FlowResult, FlowError>
+where
+    S: Scheduler + Send + Sync + 'static,
+    T: TaskTransport + Send + Sync + 'static,
+{
     // Validate before dispatching anything: a cycle discovered halfway
     // through leaves work half-done on machines somebody else owns.
-    workflow.order()?;
+    let order = workflow.order()?;
 
     let mut waiting: Vec<usize> = workflow
         .steps
@@ -136,7 +179,39 @@ where
     let mut results: HashMap<usize, TaskResult> = HashMap::new();
     let mut placements: Vec<Placement> = Vec::new();
     let mut abandoned: Vec<usize> = Vec::new();
-    let mut ready: Vec<usize> = workflow.roots();
+    let mut resumed: Vec<usize> = Vec::new();
+
+    // Anything an earlier run finished, whose output is still out there.
+    let journal = run.and(controller.checkpoint().cloned());
+    let fingerprint = journal
+        .as_ref()
+        .map(|_| crate::checkpoint::fingerprint(workflow));
+    if let (Some(journal), Some(run), Some(fingerprint)) = (&journal, run, &fingerprint) {
+        let completed = journal.completed(run, fingerprint)?;
+        for step in order {
+            let Some(record) = completed.get(&step) else {
+                continue;
+            };
+            if controller.catalog().locations(record.output_id).is_empty() {
+                debug!(
+                    step,
+                    output = %record.output_id,
+                    "running again: what it produced is no longer anywhere in the mesh"
+                );
+                continue;
+            }
+            debug!(step, node = %record.node_id, "resuming: already finished");
+            outputs.insert(step, record.output_id);
+            resumed.push(step);
+            for dependent in workflow.dependents_of(step) {
+                waiting[dependent] -= 1;
+            }
+        }
+    }
+
+    let mut ready: Vec<usize> = (0..workflow.len())
+        .filter(|step| waiting[*step] == 0 && !resumed.contains(step))
+        .collect();
 
     let before = controller.data_bytes_uncompressed();
     let mut running: JoinSet<(usize, Result<TaskResult, DispatchError>)> = JoinSet::new();
@@ -170,6 +245,26 @@ where
             outputs.insert(step, output_id);
         }
         let succeeded = result.is_success();
+        if let (Some(journal), Some(run), Some(fingerprint), Some(output_id)) =
+            (&journal, run, &fingerprint, result.output_id)
+            && succeeded
+        {
+            let record = crate::checkpoint::Record {
+                run: run.to_string(),
+                fingerprint: fingerprint.clone(),
+                step,
+                task_id: result.task_id,
+                node_id: result.node_id,
+                output_id,
+                duration_ms: result.duration.as_millis() as u64,
+            };
+            // A journal that cannot be written costs the next run its head
+            // start. It does not make this run's answer wrong, so it is not
+            // worth failing a workflow that is otherwise going fine.
+            if let Err(error) = journal.append(&record) {
+                warn!(step, %error, "could not record a finished step");
+            }
+        }
         results.insert(step, result);
 
         // Release whatever was waiting on this step, or give up on it.
@@ -202,12 +297,23 @@ where
 
     abandoned.sort_unstable();
     abandoned.dedup();
+    resumed.sort_unstable();
     placements.sort_unstable_by_key(|placement| placement.step);
+
+    let mut steps_run = Vec::with_capacity(results.len());
+    let mut ordered = Vec::with_capacity(results.len());
+    for step in 0..workflow.len() {
+        if let Some(result) = results.remove(&step) {
+            steps_run.push(step);
+            ordered.push(result);
+        }
+    }
+
     Ok(FlowResult {
-        results: (0..workflow.len())
-            .filter_map(|step| results.remove(&step))
-            .collect(),
+        results: ordered,
+        steps_run,
         skipped: abandoned,
+        resumed,
         placements,
         bytes_moved: controller.data_bytes_uncompressed() - before,
     })
@@ -297,6 +403,174 @@ mod tests {
 
     fn task(kind: &str) -> Task {
         Task::new(kind, Vec::new())
+    }
+
+    /// Same, but every finished step is recorded to a fresh journal file.
+    fn controller_journalling(
+        nodes: usize,
+        name: &str,
+    ) -> (
+        Arc<Controller<LeastLoadedScheduler, SimulatedMesh>>,
+        Arc<crate::checkpoint::Journal>,
+    ) {
+        let path = std::env::temp_dir()
+            .join(format!("aethermesh-flow-{}", std::process::id()))
+            .join(format!("{name}.jsonl"));
+        let _ = std::fs::remove_file(&path);
+        let journal = Arc::new(crate::checkpoint::Journal::open(&path).unwrap());
+
+        let controller = Controller::new(
+            LeastLoadedScheduler::new(),
+            SimulatedMesh::with_executor(aether_agent::execute),
+            DataCatalog::new(),
+        )
+        .with_checkpoint(journal.clone());
+        for index in 0..nodes {
+            controller.register(NodeInfo::new(
+                NodeId::generate(),
+                format!("node-{index}"),
+                "127.0.0.1:1",
+                4,
+            ));
+        }
+        (Arc::new(controller), journal)
+    }
+
+    fn chain(payload: &[u8]) -> Workflow {
+        Workflow::chain(vec![
+            Task::new(kind::ECHO, payload.to_vec()),
+            Task::new(kind::HASH, Vec::new()),
+            Task::new(kind::HASH, Vec::new()),
+        ])
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_resumed_run_does_not_repeat_what_it_already_did() {
+        let (controller, journal) = controller_journalling(1, "resume");
+
+        let first = run_workflow_resumable(controller.clone(), &chain(b"seed"), "nightly")
+            .await
+            .unwrap();
+        assert_eq!(first.results.len(), 3);
+        assert!(first.resumed.is_empty());
+        assert_eq!(journal.records().unwrap().len(), 3);
+
+        // The same workflow, submitted again under the same name. The outputs
+        // are still on the node, so there is nothing left to do.
+        let second = run_workflow_resumable(controller.clone(), &chain(b"seed"), "nightly")
+            .await
+            .unwrap();
+
+        assert_eq!(second.resumed, vec![0, 1, 2]);
+        assert!(second.results.is_empty());
+        assert!(second.is_success());
+        // And nothing new was recorded: it ran nothing.
+        assert_eq!(journal.records().unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn only_the_steps_that_finished_are_resumed() {
+        let (controller, _journal) = controller_journalling(1, "partial");
+
+        // A chain whose second step fails: the first is recorded, the third
+        // never runs.
+        let broken = Workflow::chain(vec![
+            Task::new(kind::ECHO, b"seed".to_vec()),
+            Task::new("no-such-kind", Vec::new()),
+            Task::new(kind::HASH, Vec::new()),
+        ])
+        .unwrap();
+        let first = run_workflow_resumable(controller.clone(), &broken, "nightly")
+            .await
+            .unwrap();
+        assert!(!first.is_success());
+        assert_eq!(first.skipped, vec![2]);
+
+        let second = run_workflow_resumable(controller.clone(), &broken, "nightly")
+            .await
+            .unwrap();
+
+        // Step 0 succeeded and is skipped. Step 1 failed, so it is tried
+        // again rather than treated as done.
+        assert_eq!(second.resumed, vec![0]);
+        assert_eq!(second.steps_run, vec![1]);
+        assert_eq!(second.skipped, vec![2]);
+    }
+
+    #[tokio::test]
+    async fn a_step_whose_output_is_gone_runs_again() {
+        let (controller, _journal) = controller_journalling(1, "lost");
+
+        let workflow = chain(b"seed");
+        let first = run_workflow_resumable(controller.clone(), &workflow, "nightly")
+            .await
+            .unwrap();
+        assert_eq!(first.results.len(), 3);
+
+        // The node holding everything leaves the mesh.
+        let node = first.results[0].node_id;
+        controller.catalog().forget_node(node);
+
+        let second = run_workflow_resumable(controller.clone(), &workflow, "nightly")
+            .await
+            .unwrap();
+
+        // The journal still says these steps finished. It is a record of what
+        // happened, not a promise that the data survived.
+        assert!(second.resumed.is_empty());
+        assert_eq!(second.results.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn a_run_name_cannot_be_reused_for_a_different_workflow() {
+        let (controller, _journal) = controller_journalling(1, "fingerprint");
+
+        run_workflow_resumable(controller.clone(), &chain(b"seed"), "nightly")
+            .await
+            .unwrap();
+
+        // Same name, different work. Resuming this would skip step 0 because
+        // some other graph's step 0 finished.
+        let error = run_workflow_resumable(controller.clone(), &chain(b"different"), "nightly")
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, FlowError::Checkpoint(_)), "{error:?}");
+    }
+
+    #[tokio::test]
+    async fn an_unnamed_run_is_not_recorded() {
+        let (controller, journal) = controller_journalling(1, "unnamed");
+
+        let outcome = run_workflow(controller.clone(), &chain(b"seed"))
+            .await
+            .unwrap();
+
+        assert!(outcome.is_success());
+        assert!(outcome.resumed.is_empty());
+        assert!(journal.records().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn results_say_which_step_they_belong_to() {
+        let controller = controller_with(1);
+        // Step 1 fails, so step 2 never runs and step 3 is unaffected.
+        let workflow = Workflow::new(vec![
+            Step::new(Task::new(kind::ECHO, b"a".to_vec())),
+            Step::new(Task::new("no-such-kind", Vec::new())),
+            Step::after(Task::new(kind::HASH, Vec::new()), vec![1]),
+            Step::new(Task::new(kind::ECHO, b"d".to_vec())),
+        ])
+        .unwrap();
+
+        let outcome = run_workflow(controller.clone(), &workflow).await.unwrap();
+
+        // Three results for four steps. Reporting the third of them as "step 2"
+        // would blame the failure on the wrong step.
+        assert_eq!(outcome.steps_run, vec![0, 1, 3]);
+        assert_eq!(outcome.skipped, vec![2]);
+        assert!(!outcome.results[1].is_success());
     }
 
     #[tokio::test]
