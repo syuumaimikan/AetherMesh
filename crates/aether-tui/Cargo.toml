@@ -1,0 +1,43 @@
+[package]
+name = "aether-tui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Terminal dashboard for AetherMesh: watch what the mesh moves, and submit work to it"
+
+[lib]
+name = "aether_tui"
+path = "src/lib.rs"
+
+[[bin]]
+name = "aether-tui"
+path = "src/main.rs"
+
+[dependencies]
+# The protocol types come from the controller rather than being restated here.
+# A dashboard that drifts from the thing it is watching is worse than no
+# dashboard, and this makes drift a compile error.
+aether-controller.workspace = true
+aether-core.workspace = true
+
+anyhow.workspace = true
+base64.workspace = true
+clap = { workspace = true, features = ["derive", "env"] }
+# crossterm comes through ratatui rather than being pinned separately:
+# two copies of a terminal backend in one binary is a version skew waiting
+# to happen, and ratatui re-exports the one it was built against.
+ratatui = "0.29"
+serde_json.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "time"] }
+
+[dev-dependencies]
+aether-scheduler.workspace = true
+
+[lints]
+workspace = true

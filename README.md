@@ -10,7 +10,7 @@ Write the work in TypeScript, Rust, Go, or anything that compiles to WebAssembly
 
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
-[![Tests](https://img.shields.io/badge/tests-256%20passing-brightgreen.svg)](#contributing)
+[![Tests](https://img.shields.io/badge/tests-365%20passing-brightgreen.svg)](#contributing)
 [![Status](https://img.shields.io/badge/status-alpha-yellow.svg)](#project-status)
 
 **[Documentation site](https://syuumaimikan.github.io/AetherMesh/)** · **[日本語](README.ja.md)** · **[Examples](examples)**
@@ -108,9 +108,9 @@ The module is published like any dataset, so a 5 MB module reaches each node onc
 
 ## Project status
 
-**Alpha — everything on the roadmap is implemented, covered by 323 tests, and not yet battle-tested.**
+**Alpha — everything on the roadmap is implemented, covered by 365 tests, and not yet battle-tested.**
 
-Working today: core types, wire protocol, node registry, metrics collection, three schedulers, label-based placement constraints, TCP transport with TLS and optional mutual TLS on both listeners, shared and per-node tokens, persistent node identity, built-in and WebAssembly task execution with opt-in host capabilities, content-addressed and chunked transfer with dedup, transfer across several parallel connections, adaptive compression, a bounded LRU data cache on each agent, a result cache on the controller, retries and heartbeat eviction, idle heartbeat backoff, measured latency and bandwidth feeding the scheduler, a JSON client API with TypeScript, Python, Go, Java, and C# SDKs, a Prometheus endpoint, TOML configuration, structured logs, cloud adapters for Kubernetes, AWS, GCP, Azure and local processes, and benchmarks against both a naive baseline and Dask.
+Working today: core types, wire protocol, node registry, metrics collection, three schedulers, label-based placement constraints, TCP transport with TLS and optional mutual TLS on both listeners, shared and per-node tokens, persistent node identity, built-in and WebAssembly task execution with opt-in host capabilities, content-addressed and chunked transfer with dedup, transfer across several parallel connections, adaptive compression, a bounded LRU data cache on each agent, a result cache on the controller, retries and heartbeat eviction, idle heartbeat backoff, measured latency and bandwidth feeding the scheduler, a JSON client API with TypeScript, Python, Go, Java, and C# SDKs, a Prometheus endpoint, a terminal dashboard, TOML configuration, structured logs, cloud adapters for Kubernetes, AWS, GCP, Azure and local processes, and benchmarks against both a naive baseline and Dask.
 
 Honest limits — what is implemented but not proven, rather than missing:
 
@@ -202,6 +202,32 @@ Registration is refused — and counted — when the token is missing or wrong. 
 ---
 
 ## Watching it run
+
+```bash
+cargo install --path crates/aether-tui
+aether-tui --controller 127.0.0.1:7100
+```
+
+```
+ AetherMesh ● live  127.0.0.1:7100  every 1.00s
+┌ Throughput ────────────────────────────┐┌ Not moved ─────────────────────────┐┌ Mesh ──────────────────────────────┐
+│7.3 MiB/s   peak 7.3 MiB/s              ││compressed away   1020.0 KiB        ││nodes             2/2 connected     │
+│18.0 MiB on the wire so far             ││ratio             0.948             ││datasets          26 · 41.0 MiB     │
+│ █                                      ││transfers skipped 2                 ││tasks ok          9                 │
+│ █                                      ││chunks skipped    3                 ││tasks failed      0                 │
+└────────────────────────────────────────┘└────────────────────────────────────┘└────────────────────────────────────┘
+┌ Nodes (2) ─────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│   host                     id        cpu    mem    rtt       link         holds            labels                  │
+│●  syuum                    73ef9fd1  24%    80%    —         —            2 · 5.0 MiB      kind=gpu                │
+│●  syuum                    824d28e0  24%    80%    —         —            —                kind=cpu region=eu-west │
+└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+ q quit   s send a task   ↑↓ node   +/- poll rate   r refresh   ? help
+```
+
+A real frame from a real mesh. The **Not moved** panel is the point of the project; the **holds** column is the locality the scheduler is deciding on. Press `s` to send a task and watch where it lands. Details: [`crates/aether-tui`](crates/aether-tui).
+
+### Or scrape it
+
 
 ```bash
 aether-controller --metrics-listen 127.0.0.1:9100
@@ -414,7 +440,7 @@ Built and tested:
 | **Isolation** | WebAssembly on wasmi or wasmtime, fuel and memory limits, capabilities off by default |
 | **Failure** | Heartbeat eviction, retry onto another node, dead sockets skipped at selection |
 | **Security** | TLS and mutual TLS on both listeners, shared and per-node tokens, per-registration data-channel tokens, constant-time comparison |
-| **Operating it** | TOML config, structured logs, Prometheus `/metrics`, idle heartbeat backoff, 1.3 MB and 2.7 MB binaries |
+| **Operating it** | TOML config, structured logs, Prometheus `/metrics`, a terminal dashboard, idle heartbeat backoff, small binaries |
 | **Reaching it** | JSON client API with TypeScript, Python, Go, Java, and C# SDKs, plus a `concurrent.futures` pool for Python |
 | **Provisioning** | Kubernetes, AWS EC2, GCP Compute, Azure VMs, local processes |
 

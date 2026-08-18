@@ -15,6 +15,17 @@ from 0.1.0 onward. Until then, `main` is the release.
   Constraints filter before any scoring, so a task no node satisfies is
   refused rather than placed somewhere it was not allowed. Carried through the
   client API and all three SDKs.
+- **A terminal dashboard** (`aether-tui`). Throughput, what the mesh did not
+  have to move, and which node holds what — plus sending a task from the
+  dashboard to watch where it lands. It reconnects on its own and keeps the last
+  known numbers on screen while it does, because "the mesh went quiet" and
+  "every node left" are different emergencies.
+- **A release workflow** building the controller, agent, and dashboard for
+  Linux, macOS, and Windows, including `aarch64` and `armv7`.
+- **`Stats` on the client API and traffic counters on `/metrics`.** The figures
+  that describe the whole point of the project — bytes moved, bytes saved by
+  compression, transfers and chunks skipped — were private fields on a struct
+  one task owns exclusively, and so were unreadable from anywhere else.
 - **A storage budget on the agent** (`--storage-budget-mb`). An agent's data
   cache previously grew for as long as the process ran, with no way to bound
   it — fine on a workstation, fatal on a board with 1 GB of RAM. Over budget it

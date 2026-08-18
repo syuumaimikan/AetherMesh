@@ -34,6 +34,11 @@ jobs:
       - name: WebAssembly JIT backend
         run: cargo test -p aether-wasm --no-default-features --features wasmtime-backend
 
+      # The dashboard has an example that renders a frame against a live
+      # controller; it is how the screenshots in the docs are produced.
+      - name: Dashboard examples build
+        run: cargo build -p aether-tui --examples
+
   lint:
     runs-on: ubuntu-latest
     steps:

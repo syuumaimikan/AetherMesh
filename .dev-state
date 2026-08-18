@@ -1,19 +1,25 @@
-phase=advanced-A15
+phase=advanced-A16
 status=complete
-next=A16-tui
+next=A2-priority-queue
 
 # Working notes for whoever picks this up next. Not documentation — the READMEs
 # and docs/ are. This is the stuff that would otherwise have to be rediscovered.
 
-test counts: 281 default / 334 with tls + cloud-http
+test counts: 312 default / 365 with tls + cloud-http
 
 ## Advanced phases
 
 completed:
 - A15 Observability API: TrafficStats shared out of the dispatcher task,
   ClientRequest::Stats, NodeSummary enriched, same numbers on /metrics
+- A16 TUI: crates/aether-tui (lib + bin), ratatui 0.29 with its re-exported
+  crossterm. Verified by rendering real frames against a live 2-agent mesh;
+  the README screenshots are those frames, not mock-ups.
+- packaging: .github/workflows/release.yml builds all three binaries for
+  6 targets on a v* tag. Distro packages (deb/brew/AUR) not done.
 
-next: A16 TUI (ratatui) consuming ClientRequest::Stats + Nodes, then packaging
+next: A2 priority queue — the TUI has no queue panel and no drain/cancel keys
+because none of that exists to be controlled yet
 
 not started: A1 real-network bench, A2/A3 priority queue (no queue exists at
 all — submit dispatches immediately), A4 QUIC, A6 cost, A7 spot, A8/A9 DAG,

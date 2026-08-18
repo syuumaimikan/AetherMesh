@@ -1,4 +1,4 @@
-﻿[workspace]
+[workspace]
 resolver = "3"
 members = [
     "crates/aether-core",
@@ -9,6 +9,7 @@ members = [
     "crates/aether-scheduler",
     "crates/aether-wasm",
     "crates/aether-benchmark",
+    "crates/aether-tui",
 ]
 
 [workspace.package]
