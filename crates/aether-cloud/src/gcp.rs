@@ -268,18 +268,12 @@ impl CloudProvider for GcpProvider {
             resource_id: name,
             address: spec.controller_address.clone(),
         };
-        self.workers
-            .lock()
-            .expect("workers mutex poisoned")
-            .insert(node_id, worker.clone());
+        aether_core::lock(&self.workers).insert(node_id, worker.clone());
         Ok(worker)
     }
 
     async fn get_metrics(&self, node_id: NodeId) -> Result<NodeMetrics, CloudError> {
-        let name = self
-            .workers
-            .lock()
-            .expect("workers mutex poisoned")
+        let name = aether_core::lock(&self.workers)
             .get(&node_id)
             .map(|worker| worker.resource_id.clone())
             .ok_or_else(|| CloudError::UnknownResource(node_id.to_string()))?;

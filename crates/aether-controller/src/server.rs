@@ -125,11 +125,7 @@ where
 
                 let node_id = info.id;
                 let hostname = info.hostname.clone();
-                state
-                    .registry
-                    .lock()
-                    .expect("registry mutex poisoned")
-                    .register(info);
+                aether_core::lock(&state.registry).register(info);
                 // A reconnecting agent starts with an empty store, so anything
                 // the catalog still credits to it is stale.
                 state.catalog.forget_node(node_id);
@@ -196,11 +192,7 @@ where
                     break Ok(());
                 };
 
-                let outcome = state
-                    .registry
-                    .lock()
-                    .expect("registry mutex poisoned")
-                    .record_heartbeat(node_id, metrics);
+                let outcome = aether_core::lock(&state.registry).record_heartbeat(node_id, metrics);
                 match outcome {
                     Ok(()) => {
                         state.metrics.record_heartbeat();

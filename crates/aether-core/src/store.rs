@@ -164,7 +164,7 @@ impl DataStore {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
-        self.inner.lock().expect("data store mutex poisoned")
+        crate::lock::lock(&self.inner)
     }
 }
 

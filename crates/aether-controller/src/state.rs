@@ -53,9 +53,6 @@ impl MeshState {
 
     /// Snapshot of the registered nodes, for the scheduler.
     pub fn nodes(&self) -> Vec<aether_core::NodeInfo> {
-        self.registry
-            .lock()
-            .expect("registry mutex poisoned")
-            .nodes()
+        aether_core::lock(&self.registry).nodes()
     }
 }

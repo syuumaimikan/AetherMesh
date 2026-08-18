@@ -159,7 +159,7 @@ impl ResultCache {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
-        self.inner.lock().expect("result cache mutex poisoned")
+        aether_core::lock(&self.inner)
     }
 }
 

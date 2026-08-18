@@ -303,11 +303,8 @@ where
                 debug!(%data_id, chunks = manifest.len(), "manifest received");
                 // Chunks this node already holds count as received, which is
                 // why the controller may skip sending them.
-                let assembled = self
-                    .assembler
-                    .lock()
-                    .expect("assembler mutex poisoned")
-                    .begin_with(manifest, &self.store);
+                let assembled =
+                    aether_core::lock(&self.assembler).begin_with(manifest, &self.store);
                 match assembled {
                     Ok(assembled) => self.finish_data(data_id, assembled),
                     Err(error) => warn!(%error, "rejecting manifest"),
@@ -324,9 +321,7 @@ where
                 match decompress(codec, &bytes)
                     .map_err(|error| error.to_string())
                     .and_then(|bytes| {
-                        self.assembler
-                            .lock()
-                            .expect("assembler mutex poisoned")
+                        aether_core::lock(&self.assembler)
                             .add_stored(&self.store, data_id, index, bytes)
                             .map_err(|error| error.to_string())
                     }) {
@@ -503,9 +498,7 @@ where
                     let assembled = decompress(codec, &bytes)
                         .map_err(|error| error.to_string())
                         .and_then(|bytes| {
-                            assembler
-                                .lock()
-                                .expect("assembler mutex poisoned")
+                            aether_core::lock(&assembler)
                                 .add_stored(&store, data_id, index, bytes)
                                 .map_err(|error| error.to_string())
                         });

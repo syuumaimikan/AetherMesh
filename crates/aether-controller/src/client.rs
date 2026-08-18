@@ -728,7 +728,11 @@ where
 /// Runs one authorized request.
 async fn serve_request(request: &ClientRequest, gateway: &ClientGateway) -> ClientResponse {
     let outcome = match request {
-        ClientRequest::Hello { .. } => unreachable!("handled by the caller"),
+        // Handled by the caller, which authorizes before getting here. An
+        // error rather than `unreachable!`: this file parses whatever a
+        // client sends, and nothing in it should be able to stop the
+        // process.
+        ClientRequest::Hello { .. } => Err("already connected".to_string()),
         ClientRequest::Publish { data } => publish(data, gateway).await,
         request @ ClientRequest::Submit { .. } => submit(request, gateway).await,
         ClientRequest::Nodes => nodes(gateway).await,
@@ -770,7 +774,7 @@ async fn submit(
         module,
     } = request
     else {
-        unreachable!("only a submission reaches here");
+        return Err("expected a submission".to_string());
     };
 
     let payload = decode(payload)?;

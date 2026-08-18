@@ -383,11 +383,7 @@ async fn log_metrics(state: MeshState, interval: Duration) {
         ticker.tick().await;
         let snapshot = state.metrics.snapshot();
         info!(
-            nodes = state
-                .registry
-                .lock()
-                .expect("registry mutex poisoned")
-                .len(),
+            nodes = aether_core::lock(&state.registry).len(),
             registered = snapshot.nodes_registered,
             rejected = snapshot.registrations_rejected,
             evicted = snapshot.nodes_evicted,

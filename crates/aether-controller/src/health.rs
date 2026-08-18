@@ -21,18 +21,10 @@ pub const DEFAULT_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 ///
 /// Returns the nodes it evicted.
 pub fn evict_stale_nodes(state: &MeshState, timeout: Duration) -> Vec<NodeId> {
-    let stale = state
-        .registry
-        .lock()
-        .expect("registry mutex poisoned")
-        .stale_nodes(timeout);
+    let stale = aether_core::lock(&state.registry).stale_nodes(timeout);
 
     for node_id in &stale {
-        state
-            .registry
-            .lock()
-            .expect("registry mutex poisoned")
-            .remove(*node_id);
+        aether_core::lock(&state.registry).remove(*node_id);
         state.connections.detach(*node_id);
         // Its store went with it, so the data it held is no longer reachable.
         state.catalog.forget_node(*node_id);

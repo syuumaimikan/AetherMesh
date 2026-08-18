@@ -59,7 +59,7 @@ impl SimulatedMesh {
     }
 
     fn assembler(&self) -> std::sync::MutexGuard<'_, ChunkAssembler> {
-        self.assembler.lock().expect("assembler mutex poisoned")
+        aether_core::lock(&self.assembler)
     }
 
     /// Data the simulated nodes hold.

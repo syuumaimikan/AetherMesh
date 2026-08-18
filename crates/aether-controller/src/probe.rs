@@ -84,10 +84,7 @@ pub async fn measure(
 
 /// Measures every connected node and folds the result into the registry.
 pub async fn probe_once(state: &MeshState, padding_bytes: usize) {
-    let nodes: Vec<NodeId> = state
-        .registry
-        .lock()
-        .expect("registry mutex poisoned")
+    let nodes: Vec<NodeId> = aether_core::lock(&state.registry)
         .nodes()
         .into_iter()
         .map(|info| info.id)
@@ -99,15 +96,11 @@ pub async fn probe_once(state: &MeshState, padding_bytes: usize) {
             continue;
         };
 
-        state
-            .registry
-            .lock()
-            .expect("registry mutex poisoned")
-            .record_link(
-                node_id,
-                measurement.latency_ms,
-                measurement.bandwidth_bytes_per_sec,
-            );
+        aether_core::lock(&state.registry).record_link(
+            node_id,
+            measurement.latency_ms,
+            measurement.bandwidth_bytes_per_sec,
+        );
 
         debug!(
             %node_id,

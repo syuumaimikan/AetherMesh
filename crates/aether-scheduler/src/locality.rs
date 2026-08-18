@@ -119,7 +119,7 @@ impl DataCatalog {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<DataId, Entry>> {
-        self.inner.lock().expect("data catalog mutex poisoned")
+        aether_core::lock(&self.inner)
     }
 }
 

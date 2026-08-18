@@ -321,7 +321,7 @@ impl<S: Scheduler, T: TaskTransport + Send + Sync> Controller<S, T> {
 
     /// The controller's view of the mesh, locked for reading.
     pub fn registry(&self) -> std::sync::MutexGuard<'_, NodeRegistry> {
-        self.registry.lock().expect("registry mutex poisoned")
+        aether_core::lock(&self.registry)
     }
 
     /// Adds a node to the controller's view.
@@ -330,10 +330,7 @@ impl<S: Scheduler, T: TaskTransport + Send + Sync> Controller<S, T> {
     /// to the whole controller: with several tasks in flight there is no
     /// single owner to hand a `&mut` to.
     pub fn register(&self, info: aether_core::NodeInfo) {
-        self.registry
-            .lock()
-            .expect("registry mutex poisoned")
-            .register(info);
+        aether_core::lock(&self.registry).register(info);
     }
 
     /// Replaces the controller's view of the mesh with `nodes`.
@@ -345,7 +342,7 @@ impl<S: Scheduler, T: TaskTransport + Send + Sync> Controller<S, T> {
         for info in nodes {
             registry.register(info);
         }
-        *self.registry.lock().expect("registry mutex poisoned") = registry;
+        *aether_core::lock(&self.registry) = registry;
     }
 
     pub fn transport(&self) -> &T {
@@ -382,7 +379,7 @@ impl<S: Scheduler, T: TaskTransport + Send + Sync> Controller<S, T> {
     }
 
     fn manifests(&self) -> std::sync::MutexGuard<'_, HashMap<DataId, ChunkManifest>> {
-        self.manifests.lock().expect("manifest mutex poisoned")
+        aether_core::lock(&self.manifests)
     }
 
     /// Registers data with the controller and returns its content address.
@@ -393,7 +390,14 @@ impl<S: Scheduler, T: TaskTransport + Send + Sync> Controller<S, T> {
     pub fn publish(&self, bytes: Vec<u8>) -> DataDescriptor {
         let descriptor = self.store.put(bytes);
         if descriptor.size_bytes > self.chunk_size as u64 {
-            let bytes = self.store.get(descriptor.id).expect("just stored");
+            // Only a bounded store can lose a blob between putting and reading
+            // it, and the controller's is not bounded today. Handled anyway:
+            // the cost of being wrong is the dataset travelling whole instead
+            // of in chunks, which is slower, not incorrect.
+            let Some(bytes) = self.store.get(descriptor.id) else {
+                warn!(data_id = %descriptor.id, "published data was dropped before it could be split");
+                return descriptor;
+            };
             self.manifests()
                 .entry(descriptor.id)
                 .or_insert_with(|| ChunkManifest::split(&bytes, self.chunk_size));
@@ -575,9 +579,7 @@ impl<S: Scheduler, T: TaskTransport + Send + Sync> Controller<S, T> {
     /// The lock covering "this dataset going to this node", creating it if
     /// this is the first task to want it.
     fn transfer_lock(&self, node_id: NodeId, data_id: DataId) -> TransferLock {
-        self.transfers
-            .lock()
-            .expect("transfer mutex poisoned")
+        aether_core::lock(&self.transfers)
             .entry((node_id, data_id))
             .or_default()
             .clone()
@@ -589,7 +591,7 @@ impl<S: Scheduler, T: TaskTransport + Send + Sync> Controller<S, T> {
     /// shrinks, which on a long-lived controller is a slow leak rather than a
     /// bug you would notice.
     fn release_transfer(&self, node_id: NodeId, data_id: DataId, transfer: TransferLock) {
-        let mut transfers = self.transfers.lock().expect("transfer mutex poisoned");
+        let mut transfers = aether_core::lock(&self.transfers);
         // Two references: the map's and ours. Anything more means somebody
         // else is waiting on it and it has to stay.
         if Arc::strong_count(&transfer) <= 2 {
@@ -605,7 +607,7 @@ impl<S: Scheduler, T: TaskTransport + Send + Sync> Controller<S, T> {
     /// stops looking as attractive as one holding none, not that the number is
     /// an accurate prediction of anything.
     fn nodes_with_pending_work(&self) -> Vec<aether_core::NodeInfo> {
-        let in_flight = self.in_flight.lock().expect("in-flight mutex poisoned");
+        let in_flight = aether_core::lock(&self.in_flight);
         self.registry()
             .nodes()
             .into_iter()
@@ -625,16 +627,13 @@ impl<S: Scheduler, T: TaskTransport + Send + Sync> Controller<S, T> {
     }
 
     fn begin_on(&self, node_id: NodeId) {
-        *self
-            .in_flight
-            .lock()
-            .expect("in-flight mutex poisoned")
+        *aether_core::lock(&self.in_flight)
             .entry(node_id)
             .or_insert(0) += 1;
     }
 
     fn finished_on(&self, node_id: NodeId) {
-        let mut in_flight = self.in_flight.lock().expect("in-flight mutex poisoned");
+        let mut in_flight = aether_core::lock(&self.in_flight);
         if let Some(pending) = in_flight.get_mut(&node_id) {
             *pending = pending.saturating_sub(1);
             if *pending == 0 {

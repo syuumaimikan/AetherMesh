@@ -72,7 +72,7 @@ impl ProcessProvider {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
-        self.inner.lock().expect("provider mutex poisoned")
+        aether_core::lock(&self.inner)
     }
 }
 

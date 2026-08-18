@@ -225,7 +225,7 @@ impl Connections {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
-        self.inner.lock().expect("connections mutex poisoned")
+        aether_core::lock(&self.inner)
     }
 }
 

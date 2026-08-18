@@ -32,6 +32,13 @@ pub enum FlowError {
     },
     #[error(transparent)]
     Checkpoint(#[from] crate::checkpoint::CheckpointError),
+    /// A step's task panicked or was cancelled.
+    ///
+    /// A bug rather than an outcome, but the workflow reporting it beats the
+    /// dispatcher panicking in sympathy and taking every other client's work
+    /// with it.
+    #[error("step {step} did not finish: {reason}")]
+    Lost { step: usize, reason: String },
 }
 
 /// Where one step ran and what it cost to put it there.
@@ -230,7 +237,17 @@ where
         let Some(finished) = running.join_next().await else {
             break;
         };
-        let (step, outcome) = finished.expect("a dispatch task never panics");
+        let (step, outcome) = match finished {
+            Ok(finished) => finished,
+            Err(error) => {
+                return Err(FlowError::Lost {
+                    // The step is inside the task that failed, so it cannot be
+                    // named here. Everything else about it can be.
+                    step: usize::MAX,
+                    reason: error.to_string(),
+                });
+            }
+        };
 
         let result = outcome.map_err(|source| FlowError::Dispatch { step, source })?;
         placements.push(placement_for(
