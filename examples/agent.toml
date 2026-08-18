@@ -50,3 +50,12 @@ data_channels = 2
 # Lower it on a machine that is doing something else with its cores: a node
 # that agreed to more work than it can do is worse than one that said no.
 # max_concurrent_tasks = 4
+
+# Longest gap between attempts to reach the controller again after the
+# connection drops. The gap doubles from a second up to this. `0` makes the
+# agent exit instead, which is what it used to do.
+#
+# Staying alive is what lets a controller restart cheaply: this node still
+# holds everything it was sent, and tells the new controller about it rather
+# than being shipped all of it again.
+reconnect_max_secs = 30

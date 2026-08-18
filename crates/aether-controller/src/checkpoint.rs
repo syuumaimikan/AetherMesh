@@ -12,13 +12,10 @@
 //! is checked rather than assumed — a node that left the mesh takes what it
 //! computed with it, and those steps run again.
 //!
-//! The catalog lives in memory, so a **restarted controller** resumes nothing:
-//! the journal survives, but the knowledge of where anything is does not, and
-//! every step runs again. What this does buy is the ordinary case — a workflow
-//! that failed halfway, submitted again — where the nodes never went anywhere
-//! and only the steps that did not finish are repeated. Making a restart
-//! resume too needs the catalog to be rebuilt from the agents, which is a
-//! protocol change and not this.
+//! A restarted controller resumes too, but only because the agents tell it
+//! where everything is when they reconnect (`Message::DataHeld`). The catalog
+//! itself is still in memory and still empty on startup; what makes a restart
+//! survivable is that the nodes outlived it and remembered.
 
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};

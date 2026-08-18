@@ -1,11 +1,11 @@
-phase=workflow-checkpoint
+phase=agent-reconnect
 status=complete
-next=A4-quic, A14 OTel, A20-A23 (persistent state)
+next=A4-quic, A14 OTel, A20-A23 (multi-controller)
 
 # Working notes for whoever picks this up next. Not documentation — the READMEs
 # and docs/ are. This is the stuff that would otherwise have to be rediscovered.
 
-test counts: 459 default / 512 with tls + cloud-http
+test counts: 467 default / 520 with tls + cloud-http
 
 ## Advanced phases
 
@@ -94,6 +94,26 @@ completed:
   In A9 that same comparison showed no difference at all, because there was
   never a second task in flight. Docs corrected in three places.
 
+- agent reconnect + DataHeld: the agent no longer exits when the connection
+  drops. aether-agent/src/reconnect.rs with_reconnect (doubling 1s -> ceiling,
+  reconnect_max_secs, 0 = old exit behaviour), AgentClient::with_store so the
+  store outlives a connection, announce_holdings() at the top of run(),
+  Message::DataHeld, controller records it into the catalog.
+
+  This CLOSES the limitation documented one commit earlier. Checkpoint resume
+  now survives a controller restart - not because the controller remembers
+  anything (it does not) but because the agents outlived it and say what they
+  hold. Live, controller killed and restarted, agent untouched:
+    node registered node_id=00c6ad83...
+    node reported what it already holds count=2 bytes=36   (14 ms later)
+    after restart: ran=[2] resumed=[0,1]
+
+  DataHeld is additive only, and identity comes from the connection like
+  DataEvicted: a node may speak about its own holdings and nothing else.
+
+  Backoff tests use tokio test-util (start_paused) rather than real sleeps;
+  that feature is a dev-dependency of aether-agent now.
+
 - A12/A13 checkpoint + resume: controller/checkpoint.rs. Journal (JSON lines,
   fsync per record), Record, fingerprint(&Workflow), Controller::with_checkpoint,
   flow::run_workflow_resumable, client API `run` field, config checkpoint_path.
@@ -106,12 +126,9 @@ completed:
   are regenerated every submission), and the output must still be in the
   catalog. Only successful steps are recorded.
 
-  KNOWN AND MEASURED LIMIT: a restarted controller resumes NOTHING. The journal
-  survives; the catalog does not, so nothing is locatable and every step runs
-  again. Verified by restarting with 2 records in the file: resumed=[]. Making
-  restart work needs agents to re-announce their holdings on registration -
-  that is a protocol change, deliberately not done here. Documented in the
-  module doc and both READMEs rather than glossed.
+  LIMIT AT THE TIME, since closed by the reconnect phase above: a restarted
+  controller resumed nothing, because the catalog did not survive it. Measured
+  then (resumed=[]) and measured again after DataHeld (resumed=[0,1]).
 
   Live: 3-step chain, last step fails. Run 1 ran [0,1,2], journalled 2. Run 2
   ran [2], resumed [0,1]. A different workflow under the same name was refused
@@ -215,8 +232,6 @@ A14 OTel, A17-A23, A24-A26 bench
 
 ## Open work
 
-- rebuild the catalog from agents on registration; without it checkpoint/resume
-  cannot survive a controller restart, and neither can locality after one
 
 - run any of this on real hardware over a real network (weakest claim here)
 - run the cloud adapters against real accounts

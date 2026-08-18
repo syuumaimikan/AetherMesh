@@ -209,6 +209,27 @@ where
                     Err(error) => warn!(%error, "dropping heartbeat"),
                 }
             }
+            Message::DataHeld { datasets, .. } => {
+                // Same rule as eviction: identity comes from the connection.
+                // A node may only speak about its own holdings, or one agent
+                // could point the scheduler at data another does not have.
+                let Some(node_id) = registered_id.or(channel_for) else {
+                    warn!("holdings reported before registration");
+                    break Ok(());
+                };
+
+                for descriptor in &datasets {
+                    state.catalog.record(*descriptor, node_id);
+                }
+                if !datasets.is_empty() {
+                    info!(
+                        %node_id,
+                        count = datasets.len(),
+                        bytes = datasets.iter().map(|d| d.size_bytes).sum::<u64>(),
+                        "node reported what it already holds"
+                    );
+                }
+            }
             Message::DataEvicted { data_ids, .. } => {
                 // Identity comes from the connection: a node may only forget
                 // its own data, or one agent could blind the scheduler to

@@ -45,6 +45,9 @@ tracing-subscriber.workspace = true
 
 [dev-dependencies]
 aether-controller.workspace = true
+# test-util only: the reconnect tests advance a paused clock rather than
+# actually sleeping through a backoff schedule.
+tokio = { workspace = true, features = ["test-util"] }
 aether-protocol.workspace = true
 aether-scheduler.workspace = true
 base64.workspace = true

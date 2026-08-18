@@ -260,12 +260,38 @@ And **the output has to still exist**. The journal records what happened, not
 a promise that the node holding it survived; a step whose output is no longer
 anywhere in the mesh runs again.
 
-The honest limit: a **restarted controller** resumes nothing. The journal
-survives the restart, but the catalog of where data lives is in memory and does
-not, so every step runs again — measured, not assumed. What this buys is the
-ordinary case, which is also the common one: a workflow that failed halfway
-while the mesh stayed up. Making a restart resume too needs agents to
-re-announce what they hold, which is a protocol change and not this.
+This survives the controller restarting, which is the case worth having:
+kill the controller mid-workflow, start it again, resubmit, and the finished
+steps are still finished. Measured, with only the controller restarted:
+
+```
+node registered                       node_id=00c6ad83…
+node reported what it already holds   node_id=00c6ad83… count=2 bytes=36
+after restart: ran=[2] resumed=[0, 1]
+```
+
+That works because of the next section, not because the controller remembered
+anything — it did not.
+
+### A node outlives the controller it registered with
+
+An agent used to exit when its connection dropped, so restarting a controller
+cost you every node in the mesh and everything they were holding. Now it waits
+and reconnects — one second, then two, four, eight, up to `reconnect_max_secs`
+(30 by default; `0` restores the old exit-on-disconnect).
+
+The reconnection is worth more than the process being alive. The agent still
+holds every dataset it was ever sent, and a controller that just started knows
+where nothing is, so the node says what it has:
+
+```
+node reported what it already holds  node_id=00c6ad83… count=2 bytes=36
+```
+
+Without that, a restarted controller would spend the next hour re-sending data
+to the machines that already had it. The claim is only ever additive — a node
+can say it holds something, never that another node does not — so the worst a
+wrong one costs is a failed task and a re-send.
 
 ### Failures are ordinary
 

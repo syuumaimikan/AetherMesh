@@ -49,6 +49,14 @@ pub struct AgentConfig {
     /// Extra connections to offer for bulk data. Chunks are spread across them,
     /// which helps when one TCP stream cannot fill the link.
     pub data_channels: usize,
+    /// Longest gap between attempts to reach the controller again after the
+    /// connection drops. Zero means give up instead, which is what the agent
+    /// used to do.
+    ///
+    /// Reconnecting is the point of keeping the process alive: the data this
+    /// node was sent is still in memory, and a controller that restarted is
+    /// told about it rather than shipping all of it again.
+    pub reconnect_max_secs: u64,
 }
 
 impl Default for AgentConfig {
@@ -68,6 +76,7 @@ impl Default for AgentConfig {
             storage_budget_bytes: None,
             bandwidth_bytes_per_sec: None,
             data_channels: 0,
+            reconnect_max_secs: 30,
         }
     }
 }

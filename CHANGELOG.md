@@ -23,11 +23,22 @@ from 0.1.0 onward. Until then, `main` is the release.
   and output ids, never the outputs — those stay on the nodes that produced
   them. A step is skipped only if the workflow matches the fingerprint the run
   was recorded against and its output is still somewhere in the mesh. A
-  restarted controller resumes nothing, because the catalog of where data
-  lives does not survive it. Off by default.
+  restarted controller resumes too, because of the reconnection below. Off by
+  default.
 - **A workflow result says which step it belongs to.** `StepOutcome.step` was
   the position in the reply, so a workflow with a skipped step blamed the
   wrong step for everything after it.
+- **An agent survives its controller.** It used to exit when the connection
+  dropped, so restarting a controller cost you every node in the mesh. It now
+  reconnects with a doubling backoff up to `reconnect_max_secs` (30s default;
+  `0` restores the old behaviour), keeping the data it holds in memory across
+  the gap.
+- **A reconnecting node reports what it already holds.** The controller's
+  catalog is in memory, so a restarted one knows where nothing is while the
+  agents are still sitting on all of it. `DataHeld` tells it, which is what
+  lets a workflow resume across a controller restart instead of re-sending
+  every dataset to the machine that already had it.
+
 - **Node labels and task constraints.** An agent declares what it is
   (`--label gpu=true --label region=eu-west`); a task says what it needs
   (`gpu=true`, `region!=us-east`, or a bare `nvme` for "has this label").

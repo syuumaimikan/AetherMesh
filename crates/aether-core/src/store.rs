@@ -143,6 +143,21 @@ impl DataStore {
         self.lock().blobs.is_empty()
     }
 
+    /// What this store holds, as the controller's catalog describes datasets.
+    ///
+    /// Ordered by id so two calls agree, which matters because this is what a
+    /// node tells a controller it has after reconnecting.
+    pub fn descriptors(&self) -> Vec<DataDescriptor> {
+        let store = self.lock();
+        let mut held: Vec<DataDescriptor> = store
+            .blobs
+            .iter()
+            .map(|(id, entry)| DataDescriptor::new(*id, entry.bytes.len() as u64))
+            .collect();
+        held.sort_unstable_by_key(|descriptor| descriptor.id);
+        held
+    }
+
     /// Bytes held across every blob.
     pub fn total_bytes(&self) -> u64 {
         self.lock().bytes
@@ -234,6 +249,21 @@ pub enum DataStoreError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_store_can_describe_what_it_holds() {
+        let store = DataStore::new();
+        let first = store.put(vec![1u8; 100]);
+        let second = store.put(vec![2u8; 250]);
+
+        let held = store.descriptors();
+
+        assert_eq!(held.len(), 2);
+        assert_eq!(held.iter().map(|d| d.size_bytes).sum::<u64>(), 350);
+        assert!(held.contains(&first) && held.contains(&second));
+        // Ordered, so a node reporting twice reports the same thing twice.
+        assert_eq!(held, store.descriptors());
+    }
 
     #[test]
     fn identical_bytes_are_stored_once() {

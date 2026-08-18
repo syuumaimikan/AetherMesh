@@ -94,6 +94,17 @@ impl<S> AgentClient<S> {
         self
     }
 
+    /// Keeps the data from a previous connection.
+    ///
+    /// This is what makes reconnecting worth doing rather than merely
+    /// possible: the agent process still holds everything it was sent, so a
+    /// controller that restarted can be told about it instead of shipping it
+    /// all again.
+    pub fn with_store(mut self, store: DataStore) -> Self {
+        self.store = store;
+        self
+    }
+
     /// The store's byte budget, if it has one.
     pub fn storage_budget(&self) -> Option<u64> {
         self.store.budget()
@@ -211,6 +222,28 @@ where
     /// configured rate rather than backing off into a guess.
     pub fn heartbeat_timeout(&self) -> Duration {
         self.heartbeat_timeout
+    }
+
+    /// Tells the controller what this node is already holding.
+    ///
+    /// Nothing is sent when the store is empty, which is every first
+    /// connection — a fresh agent has nothing to declare.
+    pub fn announce_holdings(&self) -> Result<(), ClientError> {
+        let datasets = self.store.descriptors();
+        if datasets.is_empty() {
+            return Ok(());
+        }
+        let bytes: u64 = datasets
+            .iter()
+            .map(|descriptor| descriptor.size_bytes)
+            .sum();
+        info!(count = datasets.len(), bytes, "reporting data already held");
+        self.outbound
+            .send(Message::DataHeld {
+                node_id: self.node_id,
+                datasets,
+            })
+            .map_err(|_| ClientError::Disconnected)
     }
 
     /// Queues one heartbeat.
@@ -482,6 +515,10 @@ where
         mut collector: MetricsCollector,
         interval: Duration,
     ) -> Result<(), ClientError> {
+        // Before anything else: if this is a reconnection, the controller may
+        // be a new process that knows nothing about the data sitting here.
+        self.announce_holdings()?;
+
         let node_id = self.node_id;
         let sender = self.outbound.clone();
         let activity = self.activity.clone();

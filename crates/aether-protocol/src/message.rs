@@ -61,6 +61,20 @@ pub enum Message {
         node_id: NodeId,
         data_ids: Vec<aether_core::DataId>,
     },
+    /// Agent -> controller: these datasets are here, in case you forgot.
+    ///
+    /// Sent after registering, when the node is already holding data. The
+    /// case this exists for is a controller that restarted: its catalog is in
+    /// memory, so it comes back knowing nothing about where anything is, while
+    /// the agents are still sitting on all of it. Without this the mesh spends
+    /// the next hour re-sending data to the machines that already have it.
+    ///
+    /// Only ever additive. A node saying it holds something it does not costs
+    /// a failed task; the controller re-sends on demand.
+    DataHeld {
+        node_id: NodeId,
+        datasets: Vec<aether_core::DataDescriptor>,
+    },
     /// Agent -> controller: still alive, with fresh metrics.
     Heartbeat {
         node_id: NodeId,
@@ -151,6 +165,7 @@ impl Message {
             Self::RegisterAccepted { .. } => "register_accepted",
             Self::RegisterRejected { .. } => "register_rejected",
             Self::DataEvicted { .. } => "data_evicted",
+            Self::DataHeld { .. } => "data_held",
             Self::Heartbeat { .. } => "heartbeat",
             Self::SubmitTask { .. } => "submit_task",
             Self::DataTransfer { .. } => "data_transfer",

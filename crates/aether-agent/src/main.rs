@@ -3,7 +3,9 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use aether_agent::{AgentClient, AgentConfig, MetricsCollector, identity, local_node_info};
+use aether_agent::{
+    AgentClient, AgentConfig, MetricsCollector, identity, local_node_info, with_reconnect,
+};
 use clap::Parser;
 use tracing::info;
 
@@ -64,6 +66,11 @@ struct Args {
     /// Tasks to run at once. Unset means one per logical CPU.
     #[arg(long)]
     max_concurrent_tasks: Option<usize>,
+
+    /// Longest gap between attempts to reach the controller again after the
+    /// connection drops. `0` exits instead.
+    #[arg(long)]
+    reconnect_max_secs: Option<u64>,
 }
 
 #[tokio::main]
@@ -106,6 +113,9 @@ async fn main() -> anyhow::Result<()> {
     if args.max_concurrent_tasks.is_some() {
         config.max_concurrent_tasks = args.max_concurrent_tasks;
     }
+    if let Some(secs) = args.reconnect_max_secs {
+        config.reconnect_max_secs = secs;
+    }
 
     // A restarted agent keeps its identity, so the controller sees one node.
     let identity_path = config
@@ -130,6 +140,13 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let heartbeat = Duration::from_secs(config.heartbeat_secs);
+    let reconnect = Duration::from_secs(config.reconnect_max_secs);
+    // Built once and kept across reconnections. It is what the node holds, and
+    // it does not stop being true because a socket closed.
+    let store = match config.storage_budget_bytes {
+        Some(budget) => aether_core::DataStore::with_budget(budget),
+        None => aether_core::DataStore::new(),
+    };
     match config.tls_ca_path.clone() {
         #[cfg(feature = "tls")]
         Some(ca_path) => {
@@ -139,49 +156,53 @@ async fn main() -> anyhow::Result<()> {
                 }
                 None => aether_agent::tls::connector(&ca_path)?,
             };
-            let mut client = aether_agent::tls::connect(
-                &config.controller,
-                &config.server_name(),
-                &connector,
-                info,
-                config.auth_token.clone(),
-            )
+            with_reconnect(reconnect, async || {
+                let mut client = aether_agent::tls::connect(
+                    &config.controller,
+                    &config.server_name(),
+                    &connector,
+                    info.clone(),
+                    config.auth_token.clone(),
+                )
+                .await?;
+                client = client.with_store(store.clone());
+                if let Some(tasks) = config.max_concurrent_tasks {
+                    client = client.with_max_concurrent_tasks(tasks);
+                }
+                client.run(MetricsCollector::new(), heartbeat).await?;
+                Ok(())
+            })
             .await?;
-            if let Some(budget) = config.storage_budget_bytes {
-                client = client.with_storage_budget(budget);
-            }
-            if let Some(tasks) = config.max_concurrent_tasks {
-                client = client.with_max_concurrent_tasks(tasks);
-            }
-            client.run(MetricsCollector::new(), heartbeat).await?;
         }
         #[cfg(not(feature = "tls"))]
         Some(_) => anyhow::bail!("this build has no TLS support; rebuild with --features tls"),
         None => {
-            let mut client = AgentClient::connect_with_token(
-                &config.controller,
-                info,
-                config.auth_token.clone(),
-            )
-            .await?;
-            if let Some(budget) = config.storage_budget_bytes {
-                client = client.with_storage_budget(budget);
-            }
-            if let Some(tasks) = config.max_concurrent_tasks {
-                client = client.with_max_concurrent_tasks(tasks);
-            }
-
-            // Extra connections are opened before the run loop starts, so the
-            // first large transfer already has them.
-            let _channels = client
-                .open_data_channels(
+            with_reconnect(reconnect, async || {
+                let mut client = AgentClient::connect_with_token(
                     &config.controller,
-                    config.data_channels,
+                    info.clone(),
                     config.auth_token.clone(),
                 )
                 .await?;
+                client = client.with_store(store.clone());
+                if let Some(tasks) = config.max_concurrent_tasks {
+                    client = client.with_max_concurrent_tasks(tasks);
+                }
 
-            client.run(MetricsCollector::new(), heartbeat).await?;
+                // Extra connections are opened before the run loop starts, so
+                // the first large transfer already has them.
+                let _channels = client
+                    .open_data_channels(
+                        &config.controller,
+                        config.data_channels,
+                        config.auth_token.clone(),
+                    )
+                    .await?;
+
+                client.run(MetricsCollector::new(), heartbeat).await?;
+                Ok(())
+            })
+            .await?;
         }
     }
     Ok(())
